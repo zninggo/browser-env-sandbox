@@ -19,9 +19,10 @@ import (
 
 // Engine manages V8 Isolates and creates sandbox sessions.
 type Engine struct {
-	pool   *IsolatePool
-	fpEng  FingerprintProvider
-	mu     sync.Mutex
+	pool               *IsolatePool
+	fpEng              FingerprintProvider
+	consoleSinkFactory ConsoleSinkFactory
+	mu                 sync.Mutex
 }
 
 // FingerprintProvider generates fingerprints (interface for dependency injection).
@@ -40,18 +41,30 @@ func New(fpEng FingerprintProvider, poolSize int) *Engine {
 	}
 }
 
+// SetConsoleSinkFactory configures a factory that produces a fresh ConsoleSink
+// for each new session. When set, console.* calls emitted from inside the
+// sandbox are routed to the per-session sink (instead of printed to stdout),
+// which enables per-session streaming (e.g. SSE console push from the bridge).
+//
+// If never called (the default), console output falls back to fmt.Printf and
+// existing behaviour (including the CLI) is unchanged.
+func (e *Engine) SetConsoleSinkFactory(f ConsoleSinkFactory) {
+	e.consoleSinkFactory = f
+}
+
 // Session is a single sandbox execution context.
 type Session struct {
-	ID           string
-	iso          *v8go.Isolate
-	ctx          *v8go.Context
-	fp           *api.Fingerprint
-	location     string
-	cookieStore  *CookieStore
-	timers       *TimerManager
-	netHandler   NetHandler
-	disposed     bool
-	mu           sync.Mutex
+	ID          string
+	iso         *v8go.Isolate
+	ctx         *v8go.Context
+	fp          *api.Fingerprint
+	location    string
+	cookieStore *CookieStore
+	timers      *TimerManager
+	netHandler  NetHandler
+	consoleSink ConsoleSink
+	disposed    bool
+	mu          sync.Mutex
 }
 
 // NetHandler handles network requests from within the sandbox.
@@ -90,6 +103,14 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 	cookieStore := NewCookieStore(opts.Cookies)
 	timerMgr := NewTimerManager()
 
+	// Optional per-session console sink. When a factory is configured (e.g. by
+	// the bridge layer), each session gets its own sink so console.* output can
+	// be streamed independently. nil falls back to fmt.Printf inside the env.
+	var consoleSink ConsoleSink
+	if e.consoleSinkFactory != nil {
+		consoleSink = e.consoleSinkFactory()
+	}
+
 	builder := &EnvBuilder{
 		iso:         iso,
 		global:      global,
@@ -97,6 +118,7 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 		location:    location,
 		cookieStore: cookieStore,
 		timerMgr:    timerMgr,
+		consoleSink: consoleSink,
 	}
 	builder.Build()
 
@@ -123,6 +145,7 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 		location:    location,
 		cookieStore: cookieStore,
 		timers:      timerMgr,
+		consoleSink: consoleSink,
 	}
 
 	log.Printf("[sandbox] session %s created: %s @ %s", sess.ID, fp.Browser.Name+"/"+fp.Browser.Version, fp.OS.Name)
@@ -195,6 +218,14 @@ func (s *Session) GetCookies() string {
 // SetCookie sets a cookie in the sandbox.
 func (s *Session) SetCookie(name, value string) {
 	s.cookieStore.Set(name, value, "/", "")
+}
+
+// ConsoleSink returns the per-session console sink, if one was configured via
+// Engine.SetConsoleSinkFactory. The bridge layer type-asserts this to its own
+// broadcaster implementation in order to subscribe to console events for SSE.
+// Returns nil when no factory was set (console output goes to stdout instead).
+func (s *Session) ConsoleSink() ConsoleSink {
+	return s.consoleSink
 }
 
 // Dispose releases all resources.
