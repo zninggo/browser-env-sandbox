@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xiaoxun/bes/internal/fpengine"
-	"github.com/xiaoxun/bes/internal/netlayer"
-	"github.com/xiaoxun/bes/internal/sandbox"
-	"github.com/xiaoxun/bes/pkg/api"
+	"github.com/zninggo/bes/internal/fpengine"
+	"github.com/zninggo/bes/internal/netlayer"
+	"github.com/zninggo/bes/internal/sandbox"
+	"github.com/zninggo/bes/pkg/api"
 )
 
 // Manager manages multiple isolated sandbox sessions.

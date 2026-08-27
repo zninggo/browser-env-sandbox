@@ -1,7 +1,7 @@
 package fpengine
 
 import (
-	"github.com/xiaoxun/bes/pkg/api"
+	"github.com/zninggo/bes/pkg/api"
 )
 
 // ExtendedKnowledgeBase returns a knowledge base with Firefox, Safari,

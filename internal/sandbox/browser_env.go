@@ -7,7 +7,7 @@ import (
 
 	"rogchap.com/v8go"
 
-	"github.com/xiaoxun/bes/pkg/api"
+	"github.com/zninggo/bes/pkg/api"
 )
 
 // EnvBuilder constructs browser environment objects on the ObjectTemplate

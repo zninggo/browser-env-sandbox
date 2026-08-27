@@ -1,4 +1,4 @@
-module github.com/xiaoxun/bes
+module github.com/zninggo/bes
 
 go 1.22
 

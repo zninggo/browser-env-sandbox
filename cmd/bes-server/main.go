@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/xiaoxun/bes/internal/bridge"
-	"github.com/xiaoxun/bes/internal/fpengine"
-	"github.com/xiaoxun/bes/internal/sandbox"
+	"github.com/zninggo/bes/internal/bridge"
+	"github.com/zninggo/bes/internal/fpengine"
+	"github.com/zninggo/bes/internal/sandbox"
 )
 
 func main() {
