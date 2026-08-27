@@ -1,7 +1,7 @@
 # 架构设计文档
 
 > browser-env-sandbox · Go + V8 架构
-> 2026-08-27 重构（从 Node.js vm 升级）
+> 2026-08-27 · Go + V8 架构
 
 ## 1. 技术选型
 
@@ -14,7 +14,7 @@
 - 编译为单二进制 — 部署简单，无运行时依赖
 - CGO — v8go 通过 CGO 调 V8，同时可 FFI 桥接 curl-impersonate
 
-**为什么不用 Node.js vm（v1 方案）：**
+**为什么不用 Node.js vm：**
 - vm 不是真沙箱，有已知逃逸路径
 - vm 外层是 Node 进程，宿主污染无法根除
 - 单线程事件循环，无法池化并发
@@ -201,7 +201,7 @@ func (p *IsolatePool) Put(iso *v8go.Isolate) {
 }
 ```
 
-**Node 痕迹抹除（v2 优势）：**
+**Node 痕迹抹除（架构优势）：**
 
 v8go 创建的 Isolate **天然没有** Buffer/process/require/module。这是相比 Node vm 的根本优势——不是「抹除」，而是「从不存在」。
 
@@ -425,7 +425,7 @@ Observe → Capture → Rebuild → Patch → DeepDive
 
 以下 10 条实战经验适用于本项目，且 Go + v8go 架构天然解决其中几条：
 
-| 约束 | Node.js vm | Go + v8go |
+| 约束 | Node.js vm 方案 | Go + v8go 方案 |
 |------|-------------|----------------|
 | Node 痕迹抹除 | 需手动设 undefined | **天然不存在** |
 | top/parent 不用 Proxy | 手动自引用 | Go 注入直接引用 |

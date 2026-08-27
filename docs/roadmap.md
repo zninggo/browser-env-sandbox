@@ -2,16 +2,16 @@
 
 ## Phase 0: 架构确立 ✅ (2026-08-27)
 - [x] 确定技术栈: Go + v8go
-- [x] 源码经验整理到 design-constraints.md
+- [x] 设计约束整理到 design-constraints.md
 - [x] ARCHITECTURE.md 编写
 - [x] README.md 编写
 - [x] go.mod 创建
-- [ ] git commit
+- [x] git commit
 
 ## Phase 1: 指纹引擎 (fpengine)
 > 最核心也最难，决定项目上限
 
-- [ ] 指纹知识库 (Chrome × Windows × 常见 GPU)
+- [ ] 指纹知识库（Chrome × Windows × 常见 GPU）
 - [ ] 指纹生成器 (种子 → 自洽指纹)
 - [ ] navigator 属性合成
 - [ ] screen 属性合成
