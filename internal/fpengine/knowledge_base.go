@@ -57,24 +57,45 @@ type TimezoneEntry struct {
 func DefaultKnowledgeBase() *KnowledgeBase {
 	return &KnowledgeBase{
 		Browsers: []BrowserEntry{
+			// Latest Chrome (2026 Q3) — primary targets
 			{
 				Name:       "chrome",
-				Version:    "131",
-				MajorVer:   131,
+				Version:    "155",
+				MajorVer:   155,
 				UATemplate: "Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36",
 			},
 			{
 				Name:       "chrome",
-				Version:    "130",
-				MajorVer:   130,
+				Version:    "152",
+				MajorVer:   152,
 				UATemplate: "Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36",
 			},
 			{
 				Name:       "chrome",
-				Version:    "129",
-				MajorVer:   129,
+				Version:    "150",
+				MajorVer:   150,
 				UATemplate: "Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36",
 			},
+			{
+				Name:       "chrome",
+				Version:    "146",
+				MajorVer:   146,
+				UATemplate: "Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36",
+			},
+			{
+				Name:       "chrome",
+				Version:    "142",
+				MajorVer:   142,
+				UATemplate: "Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36",
+			},
+			{
+				Name:       "chrome",
+				Version:    "136",
+				MajorVer:   136,
+				UATemplate: "Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36",
+			},
+			// Chrome 131 (older but curl_cffi supported, in extended only)
+			// Removed from default — use ExtendedKnowledgeBase for older versions
 		},
 		OSes: []OSEntry{
 			{
