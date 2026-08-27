@@ -13,7 +13,7 @@ import (
 	"math/rand"
 	"sync"
 
-	"github.com/xiaoxun/bes/pkg/api"
+	"github.com/zninggo/bes/pkg/api"
 )
 
 // Engine generates fingerprints using a knowledge base + seeded RNG.

@@ -7,9 +7,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/xiaoxun/bes/internal/fpengine"
-	"github.com/xiaoxun/bes/internal/sandbox"
-	"github.com/xiaoxun/bes/pkg/api"
+	"github.com/zninggo/bes/internal/fpengine"
+	"github.com/zninggo/bes/internal/mcp"
+	"github.com/zninggo/bes/internal/sandbox"
+	"github.com/zninggo/bes/pkg/api"
 )
 
 func main() {
@@ -27,6 +28,8 @@ func main() {
 		cmdExportFP(os.Args[2:])
 	case "selftest":
 		cmdSelftest(os.Args[2:])
+	case "mcp":
+		cmdMCP(os.Args[2:])
 	case "version":
 		fmt.Println("bes v0.2.0 (V8 engine: v8go v0.9.0, V8 9.0)")
 	default:
@@ -43,6 +46,7 @@ Usage:
   bes run --script <file> [--fingerprint auto] [--location <url>]
   bes export-fp --output <file> [--browser chrome] [--os windows] [--seed 0]
   bes selftest
+  bes mcp                    # Start MCP server (stdio, for AI agents)
   bes version
 `)
 }
@@ -75,8 +79,17 @@ func cmdExportFP(args []string) {
 }
 
 func cmdSelftest(args []string) {
-	// Delegate to bes-selftest binary
 	fmt.Println("Run ./bes-selftest for the full self-test suite")
+}
+
+func cmdMCP(args []string) {
+	// Start MCP server (stdio JSON-RPC for AI agents)
+	server := mcp.New()
+	defer server.Dispose()
+	if err := server.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func cmdFingerprint(args []string) {

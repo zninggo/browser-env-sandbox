@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xiaoxun/bes/internal/sandbox"
-	"github.com/xiaoxun/bes/pkg/api"
+	"github.com/zninggo/bes/internal/sandbox"
+	"github.com/zninggo/bes/pkg/api"
 )
 
 // ConsoleMessage is a single captured console.* call, ready to stream to a

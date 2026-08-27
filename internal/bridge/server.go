@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/xiaoxun/bes/pkg/api"
+	"github.com/zninggo/bes/pkg/api"
 )
 
 // Server is the JSON-over-HTTP API server. It replaces the originally planned

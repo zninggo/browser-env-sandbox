@@ -14,7 +14,7 @@ import (
 
 	"rogchap.com/v8go"
 
-	"github.com/xiaoxun/bes/pkg/api"
+	"github.com/zninggo/bes/pkg/api"
 )
 
 // Engine manages V8 Isolates and creates sandbox sessions.

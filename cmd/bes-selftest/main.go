@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xiaoxun/bes/internal/fpengine"
-	"github.com/xiaoxun/bes/internal/sandbox"
-	"github.com/xiaoxun/bes/pkg/api"
+	"github.com/zninggo/bes/internal/fpengine"
+	"github.com/zninggo/bes/internal/sandbox"
+	"github.com/zninggo/bes/pkg/api"
 )
 
 type check struct {
@@ -207,6 +207,17 @@ func main() {
 		// performance enhancements
 		{"performance.timing exists", `typeof performance.timing`, "object"},
 		{"performance.memory exists", `typeof performance.memory`, "object"},
+		// ── Shim part 4: WebGPU + behavior + CSS ──
+		{"navigator.gpu exists", `typeof navigator.gpu`, "object"},
+		{"navigator.gpu.getPreferredCanvasFormat", `typeof navigator.gpu.getPreferredCanvasFormat`, "function"},
+		{"navigator.gpu.requestAdapter", `typeof navigator.gpu.requestAdapter`, "function"},
+		{"_besBehavior exists", `typeof _besBehavior`, "object"},
+		{"_besBehavior.generateMousePath", `typeof _besBehavior.generateMousePath`, "function"},
+		{"_besBehavior.generateKeyTimings", `typeof _besBehavior.generateKeyTimings`, "function"},
+		{"element.humanClick exists", `typeof document.createElement('div').humanClick`, "function"},
+		{"element.humanType exists", `typeof document.createElement('input').humanType`, "function"},
+		{"mousePath generates steps", `_besBehavior.generateMousePath(0,0,100,100).length > 0`, "true"},
+		{"keyTimings generates delays", `_besBehavior.generateKeyTimings('hello').length`, "5"},
 	}
 
 	passed := 0
