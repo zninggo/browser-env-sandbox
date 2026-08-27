@@ -72,7 +72,7 @@ func ExtendedKnowledgeBase() *KnowledgeBase {
 	for _, v := range []struct{ ver string; major int }{
 		{"137", 137}, {"138", 138}, {"139", 139}, {"140", 140},
 		{"141", 141}, {"143", 143}, {"144", 144}, {"147", 147},
-		{"148", 148}, {"149", 149}, {"151", 151}, {"153", 153}, {"154", 154},
+		{"149", 149}, {"151", 151}, {"153", 153}, {"154", 154},
 		// Older versions (for compatibility with older TLS profiles)
 		{"131", 131}, {"124", 124}, {"120", 120},
 	} {
