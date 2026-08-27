@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package bes;
+
+option go_package = "github.com/xiaoxun/bes/internal/bridge/proto;bespb";
+
+// SandboxService is the gRPC service for the browser-env-sandbox.
+service SandboxService {
+  // CreateSession creates a new sandbox session with a fingerprint.
+  rpc CreateSession(CreateSessionRequest) returns (SessionInfo);
+  
+  // Eval executes JavaScript in a session.
+  rpc Eval(EvalRequest) returns (EvalResponse);
+  
+  // LoadScript loads and executes a script file.
+  rpc LoadScript(LoadScriptRequest) returns (LoadScriptResponse);
+  
+  // CallFunction calls a global function by name.
+  rpc CallFunction(CallRequest) returns (CallResponse);
+  
+  // GetFingerprint returns the session's fingerprint.
+  rpc GetFingerprint(FPRequest) returns (Fingerprint);
+  
+  // GetCookies returns the session's cookies.
+  rpc GetCookies(CookieRequest) returns (CookieResponse);
+  
+  // SetCookie sets a cookie in the session.
+  rpc SetCookie(SetCookieRequest) returns (SetCookieResponse);
+  
+  // CloseSession closes a session and releases resources.
+  rpc CloseSession(CloseRequest) returns (CloseResponse);
+  
+  // StreamConsole streams console messages from a session.
+  rpc StreamConsole(StreamRequest) returns (stream ConsoleMessage);
+  
+  // StreamNetwork streams network events from a session.
+  rpc StreamNetwork(StreamRequest) returns (stream NetworkEvent);
+}
+
+message CreateSessionRequest {
+  uint64 seed = 1;
+  string browser = 2;
+  string os = 3;
+  string location = 4;
+  map<string, string> cookies = 5;
+  string proxy = 6;
+  string net_mode = 7;  // "replay" or "live"
+  string recording = 8;  // path to replay file
+}
+
+message SessionInfo {
+  string session_id = 1;
+  Fingerprint fingerprint = 2;
+}
+
+message EvalRequest {
+  string session_id = 1;
+  string code = 2;
+}
+
+message EvalResponse {
+  string result = 1;
+  string error = 2;
+}
+
+message LoadScriptRequest {
+  string session_id = 1;
+  string name = 2;
+  string content = 3;
+}
+
+message LoadScriptResponse {
+  string error = 1;
+}
+
+message CallRequest {
+  string session_id = 1;
+  string function_name = 2;
+  repeated string args = 3;
+}
+
+message CallResponse {
+  string result = 1;
+  string error = 2;
+}
+
+message FPRequest {
+  string session_id = 1;
+}
+
+message Fingerprint {
+  uint64 seed = 1;
+  string browser_name = 2;
+  string browser_version = 3;
+  string os_name = 4;
+  string ua = 5;
+  string timezone = 6;
+  repeated string languages = 7;
+}
+
+message CookieRequest {
+  string session_id = 1;
+}
+
+message CookieResponse {
+  string cookies = 1;  // "name1=value1; name2=value2"
+}
+
+message SetCookieRequest {
+  string session_id = 1;
+  string name = 2;
+  string value = 3;
+}
+
+message SetCookieResponse {}
+
+message CloseRequest {
+  string session_id = 1;
+}
+
+message CloseResponse {}
+
+message StreamRequest {
+  string session_id = 1;
+}
+
+message ConsoleMessage {
+  string level = 1;  // "log", "warn", "error", etc.
+  string message = 2;
+  int64 timestamp = 3;
+}
+
+message NetworkEvent {
+  string method = 1;
+  string url = 2;
+  int32 status = 3;
+  string request_body = 4;
+  string response_body = 5;
+  int64 timestamp = 6;
+}
