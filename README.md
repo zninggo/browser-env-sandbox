@@ -1,65 +1,126 @@
 # browser-env-sandbox
 
-> 基于 V8 引擎的本地 Chrome 沙箱环境 —— 让浏览器检测 JS 以为自己跑在真 Chrome 里，无需启动真实浏览器。
+> 基于 V8 引擎的浏览器环境模拟平台 —— 程序化生成真实指纹、高性能 VM 执行、反检测沙箱
 
-## 为什么需要这个项目？
+## 这是什么
 
-在 JS 逆向（WAF 挑战、签名 SDK、风控指纹）中，很多目标代码会检测运行时环境是否为真实浏览器。Node.js 虽然也有 V8 引擎，但缺少 `window`、`navigator`、`document`、DOM 等浏览器 API，直接 `eval` 浏览器 JS 必崩。
+一个用 **Go + V8** 构建的浏览器环境模拟平台。不是补环境工具，是一个完整的反检测 VM 生态：
 
-传统做法是「补环境」——手动 mock 缺失的 API。但痛点在于：**每换一个目标 SDK（ →  → 
+- **指纹引擎** — 程序化生成自洽的浏览器指纹（navigator/canvas/WebGL/Audio/字体/时区），随机但内部一致
+- **V8 沙箱** — 纯 V8 Isolate 执行浏览器 JS，零 Node 痕迹，Isolate 池化高性能复用
+- **网络层** — 离线 replay + 在线转发双模式，session-unique 防关联
+- **调试层** — 暴露 CDP 协议，真 Chrome DevTools 可直连调试
+- **多语言桥接** — gRPC 服务 + Python/Go/Node SDK + CLI
 
-本项目把这些经验固化成一层稳定的环境快照 + vm 沙箱，**一次构建，到处复用**。
+## 为什么用 Go + V8
 
-## 核心架构
+| | Node.js vm | **Go + v8go** |
+|---|---|---|
+| V8 引擎 | ✅ 但是 Node 包着的 | ✅ 纯 V8 Isolate |
+| 宿主污染 | vm 外层是 Node 进程 | **零宿主**，完全可控 |
+| 沙箱隔离 | vm 有已知逃逸路径 | V8 Isolate 编译级隔离 |
+| 性能 | 单线程事件循环 | **Isolate 池化 + goroutine 并发** |
+| 多语言桥接 | 只能子进程 | **gRPC + FFI，任意语言** |
+| 内存安全 | JS GC | **Go GC + V8 GC 双层** |
+
+## 架构
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   browser-env-sandbox                │
-│                                                      │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐ │
-│  │  快照层      │  │  vm 沙箱层    │  │  网络转发层  │ │
-│  │  Snapshot   │→ │  Sandbox     │→ │  NetBridge  │ │
-│  │             │  │              │  │             │ │
-│  │ CDP dump    │  │ vm.createCtx │  │ XHR/fetch   │ │
-│  │ 真 Chrome   │  │ 快照灌入     │  │ → curl_cffi │ │
-│  │ 全套属性    │  │ DOM mock     │  │ TLS 指纹    │ │
-│  └─────────────┘  └──────────────┘  └─────────────┘ │
-│                                                      │
-│  目标 JS (WAF///
-│  产出: 签名 / cookie / token                          │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│              browser-env-sandbox (Go)              │
+│                                                    │
+│  ┌──────────────┐    指纹引擎                      │
+│  │  FP Engine   │    程序化生成自洽指纹             │
+│  │  种子→指纹    │    navigator/canvas/WebGL/Audio   │
+│  └──────┬───────┘    /字体/时区/WebRTC              │
+│         │ 灌入                                     │
+│  ┌──────▼───────┐    V8 沙箱引擎                    │
+│  │  Sandbox     │    v8go Isolate 池化             │
+│  │  Engine      │    浏览器 API mock (Go 注入)      │
+│  │              │    零 Node 痕迹                   │
+│  └──┬────┬──┬───┘                                 │
+│     │    │  │                                     │
+│  ┌──▼─┐│┌─▼──┐ ┌──────┐                           │
+│  │网络 │││调试 │ │ 桥接  │                           │
+│  │Net │││CDP │ │ gRPC │                           │
+│  │replay│││   │ │      │                           │
+│  │+live│││   │ │      │                           │
+│  └────┘│└───┘ └──┬───┘                           │
+│        │         │                               │
+│  ┌─────▼────┐   │  SDK                            │
+│  │Session    │  Python / Go / Node / CLI         │
+│  │Manager    │                                   │
+│  │unique     │                                   │
+│  └──────────┘                                   │
+└──────────────────────────────────────────────────┘
 ```
-
-- **环境快照层** — 用 CDP 从真 Chrome dump 全套 `navigator/screen/window/document` 属性，作为 ground truth
-- **VM 沙箱层** — Node `vm.createContext` 创建隔离环境，快照数据 + DOM mock 拼成完整浏览器环境
-- **网络转发层** — 沙箱内的 `XMLHttpRequest/fetch` 转发给 curl_cffi（带 TLS 指纹），响应灌回沙箱
 
 ## 快速开始
 
 ```bash
-# 安装依赖
-npm install
+# 编译
+go build -o bes ./cmd/bes
 
-# dump 真浏览器环境快照（需要本地 Chrome + CDP）
-node src/snapshot/cdp-dump.js --chrome-version 131
+# 生成指纹
+bes fingerprint --browser chrome --os windows --seed random
 
-# 在沙箱中执行目标 JS
-node src/index.js --snapshot snapshots/chrome-131.json --script target.js
+# 在沙箱中执行 JS
+bes run --script target.js --fingerprint auto
+
+# 启动 gRPC 服务
+bes-server --port 50051
+
+# 离线 replay
+bes replay --recording session.json --fingerprint auto
 ```
 
-## 设计约束（来自实战踩坑）
+## Python SDK
 
-- `navigator` 属性必须和请求 UA 版本一致
-- `document.URL`、`innerWidth/innerHeight` 必须可配置（参与签名计算）
-- `top/parent/frames` 不能用 Proxy（直接崩溃）
-- canary 探针（如 `navigator.pemrissions` 错拼）要正确返回 `undefined`
-- 事件循环需模拟（`setTimeout/setInterval/requestAnimationFrame`）
+```python
+from bes import Sandbox
 
-详见 [docs/design-constraints.md](docs/design-constraints.md)
+sandbox = Sandbox(fingerprint="auto")  # 随机自洽指纹
+sandbox.eval("navigator.userAgent")
+sandbox.load_script(".js")
+result = sandbox.call("sign", params)
+```
+
+## 核心特性
+
+### 指纹自洽
+
+```
+种子: 0x3F2A1B...
+  → Chrome 131 + Windows 11 + RTX 4060
+  → navigator.userAgent = "Mozilla/5.0 ... Chrome/131 ..."
+  → navigator.platform = "Win32"
+  → WebGL renderer = "ANGLE (NVIDIA, RTX 4060 ...)"
+  → canvas hash = 8a3f... (与上述组合自洽)
+  → 字体集 = Windows 默认 + NVIDIA 驱动字体
+  → 时区 = Asia/Shanghai (IP 地理一致)
+```
+
+不是随机拼凑，是**知识库驱动的自洽组合**。
+
+### Session-Unique
+
+每个会话独立：TLS 指纹 + cookie jar + 代理 IP + 指纹 + UA。多账号操作时各 session 之间零关联。
+
+### 离线 Replay
+
+录制真实浏览器请求序列 → 离线重放给沙箱。沙箱内的 XHR/fetch 不发真请求，而是从录制中取响应。用于反复调试签名算法。
 
 ## 开发路线图
 
 详见 [docs/roadmap.md](docs/roadmap.md)
+
+## 设计约束（来自 实战经验）
+
+详见 [docs/design-constraints.md](docs/design-constraints.md) — 10 条血泪经验，全部继承。
+
+## 参考
+
+`reference/` 保留了最初的 Node.js vm 实现作为参考。设计约束文档从 实战中来，全部继承。
 
 ## License
 

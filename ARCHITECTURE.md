@@ -1,289 +1,441 @@
 # 架构设计文档
 
-> browser-env-sandbox 核心架构 · v0.1
-> 2026-08-27 起草
+> browser-env-sandbox · Go + V8 架构
+> 2026-08-27 重构（从 Node.js vm 升级）
 
-## 1. 项目定位
+## 1. 技术选型
 
-### 1.1 解决什么问题
+### 1.1 核心语言：Go
 
-JS 逆向（WAF 挑战页、签名 SDK、风控指纹）中，目标代码会检测运行时环境是否为真实浏览器。检测维度包括但不限于：
+**为什么选 Go：**
+- v8go (rogchap/v8go) — 成熟的 Go V8 binding，纯 V8 Isolate
+- goroutine 并发 — 天然适合 Isolate 池化 + 多会话并发
+- gRPC 生态 — google.golang.org/grpc 是 Go 原生，桥接层零摩擦
+- 编译为单二进制 — 部署简单，无运行时依赖
+- CGO — v8go 通过 CGO 调 V8，同时可 FFI 桥接 curl-impersonate
 
-| 检测维度 | 典型检查 | Node.js 缺陷 |
-|---------|---------|-------------|
-| 全局对象 | `window`, `self`, `globalThis` 身份 | Node 的 `globalThis` ≠ 浏览器的 |
-| Navigator | `userAgent`, `platform`, `language`, `plugins` | 完全缺失 |
-| Screen | `width`, `height`, `colorDepth` | 完全缺失 |
-| Document | `URL`, `cookie`, `createElement` | 完全缺失 |
-| DOM API | `getElementById`, `querySelector` | 完全缺失 |
-| 网络 API | `XMLHttpRequest`, `fetch` | Node 的 fetch 行为不同 |
-| 定时器 | `requestAnimationFrame`, `queueMicrotask` | 部分缺失 |
-| Canvas/WebGL | `toDataURL`, `getParameter` 指纹 | 完全缺失 |
-| 错误拼写的属性 | `navigator.pemrissions` (canary) | 需正确返回 undefined |
-| Proxy 检测 | `typeof Proxy`, `Symbol.toStringTag` | 需精确模拟 |
+**为什么不用 Node.js vm（v1 方案）：**
+- vm 不是真沙箱，有已知逃逸路径
+- vm 外层是 Node 进程，宿主污染无法根除
+- 单线程事件循环，无法池化并发
+- 桥接只能子进程，开销大
 
-### 1.2 核心矛盾
+**为什么不用 Rust + rusty_v8：**
+- 欧尼酱本地有 Go 环境，无 Rust 环境
+- Go 的开发效率在原型阶段更高
+- v8go 足够成熟，Isolate 隔离能力与 rusty_v8 等价
+- 未来如需极致性能可迁移 Rust（接口不变）
 
-Node.js 的 V8 引擎与 Chrome 的 V8 引擎是同一个引擎，但**宿主环境（embedding）完全不同**：
+### 1.2 V8 接入：v8go
 
-- Chrome V8 → 绑定了 Blink（渲染引擎）、BlinkBindings（DOM API）、网络栈、GPU 进程
-- Node V8 → 绑定了 libuv、Node API（fs/http/crypto）、N-API
+```go
+import "github.com/rogchap/v8go"
 
-同一个 JS 引擎，不同的宿主。本项目的本质是：**在 Node 的 V8 上，手工重建 Chrome 的宿主环境**。
+// 创建 Isolate（独立堆，GC 不共享）
+iso := v8go.NewIsolate()
+defer iso.Dispose()
 
-### 1.3 与传统补环境的区别
+// 创建 Context
+ctx := v8go.NewContext(iso)
+defer ctx.Close()
 
-| | 传统补环境 | 本项目 |
-|---|---------|-------|
-| 环境来源 | 手写 mock，靠报错驱动 | CDP 从真 Chrome dump，ground truth |
-| 一致性 | 容易出现 UA 版本不匹配 | 快照锁定特定 Chrome 版本 |
-| 复用性 | 每个目标重写 | 通用沙箱，多目标复用 |
-| 可维护性 | 散落在各个脚本 | 统一框架，模块化 |
-| 网络层 | 各自实现 | 统一 curl_cffi 转发 |
+// 注入全局对象
+ctx.Global().Set("navigator", navigatorObj)
+ctx.Global().Set("document", documentObj)
 
-## 2. 三层架构
-
-### 2.1 环境快照层 (Snapshot Layer)
-
-**职责：** 从真实 Chrome 浏览器中采集完整的运行时环境数据，作为沙箱的 ground truth。
-
-**实现方式：** 通过 CDP (Chrome DevTools Protocol) 连接本地 Chrome，在页面上下文中执行采集脚本，dump 全套属性。
-
-**采集内容：**
-
-```
-navigator/
-├── userAgent, platform, language, languages
-├── vendor, vendorSub, productSub
-├── plugins (NamedNodeMap mock), mimeTypes
-├── hardwareConcurrency, deviceMemory
-├── maxTouchPoints, cookieEnabled, doNotTrack
-├── onLine, battery, connection
-├── permissions (含 canary: pemrissions → undefined)
-├── webdriver (必须 false)
-├── userAgentData (Chrome UA-CH)
-├── mediaDevices, geolocation
-├── serviceWorker, clipboard
-├── storage, credentials
-└── ... 所有可枚举 + 不可枚举属性
-
-screen/
-├── width, height, availWidth, availHeight
-├── colorDepth, pixelDepth
-├── orientation
-└── availLeft, availTop
-
-window/
-├── innerWidth, innerHeight, outerWidth, outerHeight
-├── devicePixelRatio, screenX, screenY
-├── scrollX, scrollY, pageXOffset, pageYOffset
-├── location (href, origin, protocol, host, pathname, search, hash)
-├── history (length, state, scrollRestoration)
-├── localStorage, sessionStorage (Storage mock)
-├── indexedDB
-├── performance (timing, memory, entries)
-├── crypto (subtle, getRandomValues)
-├── Intl (DateTimeFormat, Collator, NumberFormat)
-└── ... 全套可枚举属性
-
-document/
-├── URL, documentURI, baseURI, referrer
-├── cookie (可读写，需 mock CookieStore)
-├── title, domain, origin
-├── readyState, visibilityState
-├── characterSet, contentType
-├── createElement (返回最小 DOM Element mock)
-├── getElementById, querySelector, querySelectorAll
-├── head, body (最小 DOM 树)
-└── ... 全套属性
+// 执行 JS
+val, err := ctx.RunScript(code, "target.js")
 ```
 
-**快照格式：** JSON 文件，按 Chrome 版本命名（如 `chrome-131.json`），包含：
-
-```json
-{
-  "meta": {
-    "chrome_version": "131.0.6778.87",
-    "ua": "Mozilla/5.0 ...",
-    "dumped_at": "2026-08-27T...",
-    "cdp_url": "ws://127.0.0.1:9222/..."
-  },
-  "navigator": { ... },
-  "screen": { ... },
-  "window": { ... },
-  "document": { ... },
-  "globals": {
-    "chrome": { "runtime": {} },
-    "Buffer": null,
-    "process": null
-  }
-}
+**Isolate 池化设计：**
+```
+Isolate Pool (sync.Pool or channel-based)
+├── iso[0] — 预热, 指纹已灌入
+├── iso[1] — 预热, 指纹已灌入
+├── iso[2] — 空闲
+└── iso[3] — 执行中 (session #42)
 ```
 
-**版本管理：** 每个快照锁定一个 Chrome 大版本。请求 UA 必须与快照版本一致，否则检测会不匹配。
+## 2. 五大核心模块
 
-### 2.2 VM 沙箱层 (Sandbox Layer)
+### 2.1 指纹引擎 (fpengine)
 
-**职责：** 在 Node 的 `vm.createContext` 中构建隔离的浏览器环境，灌入快照数据 + DOM mock，让目标 JS 在其中执行。
+**职责：** 程序化生成自洽的浏览器指纹，不是 dump，是合成。
 
-**核心设计：**
+**核心挑战 — 自洽性：**
 
-```
-┌─────────────── vm.createContext ───────────────┐
-│                                                 │
-│  globalThis (= window = self = global)          │
-│  ├── navigator   ← 快照数据 (冻结/只读)         │
-│  ├── screen      ← 快照数据 (冻结/只读)         │
-│  ├── document    ← 快照数据 + DOM mock (可写)   │
-│  ├── location    ← 可配置 (参与签名)            │
-│  ├── history     ← mock                         │
-│  ├── localStorage / sessionStorage ← Storage mock│
-│  ├── performance ← mock (timing + now)          │
-│  ├── crypto      ← 原生 WebCrypto or polyfill   │
-│  ├── Intl        ← 原生 (Node 已有)             │
-│  ├── setTimeout / setInterval ← vm 内可控       │
-│  ├── XMLHttpRequest ← → NetBridge               │
-│  ├── fetch       ← → NetBridge                  │
-│  ├── chrome      ← { runtime: {} } (Chrome 特征)│
-│  ├── Buffer      ← undefined (抹去 Node 痕迹)   │
-│  ├── process     ← undefined (抹去 Node 痕迹)   │
-│  ├── require     ← undefined (抹去 Node 痕迹)   │
-│  └── ...                                        │
-│                                                 │
-│  目标 JS 在此执行                                │
-└─────────────────────────────────────────────────┘
-```
+指纹不能随机拼凑。如果 UA 说 Chrome 131 + Windows 11，那以下必须全部一致：
 
-**关键设计决策：**
-
-1. **`window = globalThis = self`** — 三者指向同一对象，模拟浏览器全局对象身份
-2. **navigator/screen 冻结** — `Object.freeze` 防止目标 JS 篡改后自我检测不一致
-3. **document 可写** — 目标 JS 会写 cookie、创建元素，document 需要可变
-4. **location 可配置** — `document.URL` 和 `location.href` 参与签名计算，必须可注入
-5. **Node 痕迹抹除** — `Buffer`, `process`, `require`, `__dirname`, `module` 等设为 undefined
-6. **Proxy 谨慎使用** — `top/parent/frames` 不包 Proxy（会崩溃），用普通对象 + getter
-7. **canary 探针** — 故意拼错的属性（`navigator.pemrissions`）返回 undefined，不能抛错
-8. **toString 伪装** — `navigator.toString()` 返回 `"[object Navigator]"`，函数的 `toString` 返回原生函数格式
-
-**DOM Mock 策略：**
-
-不做完整 DOM 实现（那是 jsdom 的领域），只实现逆向场景需要的最小子集：
-
-- `document.createElement(tagName)` → 返回 Element mock（含 `style`, `setAttribute`, `getAttribute`, `appendChild`, `innerHTML`, `getContext`）
-- `document.getElementById(id)` → 按 mock DOM 树查找
-- `document.querySelector/querySelectorAll` → 最小 CSS 选择器解析
-- `document.cookie` → CookieStore mock（get/set/toString）
-- Canvas `getContext('2d')` / `getContext('webgl')` → 返回 mock context（`toDataURL` 返回固定/随机指纹）
-
-**事件循环模拟：**
-
-- `setTimeout/setInterval` — 使用 Node 原生（vm 上下文外），但回调在 vm 内执行
-- `requestAnimationFrame` — 映射到 setTimeout(~16ms)
-- `queueMicrotask` — 使用 `Promise.resolve().then()`
-- `MutationObserver` — mock，回调可空操作或记录
-- `MessageChannel/MessagePort` — mock
-
-### 2.3 网络转发层 (Network Bridge Layer)
-
-**职责：** 拦截沙箱内的 `XMLHttpRequest` 和 `fetch` 调用，转发给外部 HTTP 客户端（curl_cffi，带 TLS 指纹），将响应灌回沙箱。
+| 属性 | 约束 |
+|------|------|
+| navigator.userAgent | Chrome 131, Windows |
+| navigator.platform | Win32 |
+| navigator.userAgentData.brands | [{Chromium, 131}, {Google Chrome, 131}, {Not.A/Brand, 24}] |
+| screen.colorDepth | 24 (Windows 标准) |
+| WebGL UNMASKED_RENDERER | ANGLE (NVIDIA, RTX 4060 ...) 或 Intel UHD |
+| canvas toDataURL hash | 与 GPU + 字体集 + Chrome 版本自洽 |
+| 字体集 | Windows 默认字体 + GPU 驱动字体 |
+| AudioContext fingerprint | 与 OS + 浏览器版本自洽 |
+| Intl.DateTimeFormat | 与 IP 地理位置时区一致 |
+| navigator.languages | 与 IP 地理 + UA 语言一致 |
 
 **架构：**
 
 ```
-沙箱内 JS 调用                  沙箱外 (Node 主线程)
-─────────────                  ──────────────────
-XMLHttpRequest.open()    →     NetBridge.request()
-fetch()                  →     NetBridge.request()
-                               │
-                               ├─ curl_cffi (impersonate=chrome131)
-                               │   ├─ TLS 指纹 (JA3/JA4)
-                               │   ├─ HTTP/2 settings
-                               │   └─ Header order
-                               │
-                               └─ 响应 → 灌回沙箱
-                                   ├─ XHR: readyState 4, status, responseText
-                                   └─ fetch: Response object mock
+fpengine/
+├── engine.go          # 引擎入口: Generate(opts) → Fingerprint
+├── knowledge_base.go  # 知识库: 浏览器×OS×硬件 矩阵
+├── navigator.go       # navigator 属性合成
+├── screen.go          # screen 属性合成
+├── canvas.go          # canvas 指纹合成
+├── webgl.go           # WebGL 指纹合成
+├── audio.go           # AudioContext 指纹合成
+├── fonts.go           # 字体集合成
+├── timezone.go        # 时区合成 (与 IP 地理联动)
+├── webrtc.go          # WebRTC IP 指纹
+└── consistency.go     # 自洽性校验
 ```
 
-**关键设计：**
+**知识库结构：**
 
-1. **XHR 状态机** — 完整模拟 `readyState` 0→1→2→3→4，触发 `onreadystatechange/onload/onerror`
-2. **fetch Response mock** — 返回带有 `.json()/.text()/.arrayBuffer()` 的 Response 对象
-3. **同步/异步** — XHR 的 `open(method, url, async=false)` 同步模式需特殊处理（vm 外阻塞）
-4. **Cookie 透传** — 响应 Set-Cookie 自动写入 document.cookie 和快照的 cookie jar
-5. **Header 顺序** — curl_cffi 的 header 顺序需与浏览器一致（部分 WAF 检测 header 顺序）
-6. **重定向控制** — 可配置是否跟随重定向（WAF 挑战页常需手动处理 302）
+```go
+type KnowledgeBase struct {
+    Browsers  []BrowserProfile  // Chrome 120-135, Firefox, Safari
+    OS        []OSProfile       // Win10/11, macOS, Linux, Android, iOS
+    GPUs      []GPUProfile      // NVIDIA RTX 3060-4090, Intel UHD/Iris, AMD Radeon
+    Fonts     map[OS][]string   // 各 OS 默认字体集
+    Screens   []ScreenProfile   // 常见分辨率组合
+    Timezones []TimezoneProfile // 时区+地区
+}
+```
 
-**与 curl_cffi 的集成方式：**
+**生成流程：**
 
-- 方案 A：通过 Python 子进程调用 curl_cffi（`python3 -c "..."`），简单但开销大
-- 方案 B：通过 HTTP 调用本地 curl_cffi 服务（起一个 Flask/FastAPI 微服务），开销小
-- 方案 C：Node 原生库（如 `curl-impersonate` 的 Node binding），需调研
+```
+1. 种子 → 确定性 RNG (相同种子 = 相同指纹)
+2. 从知识库采样: 浏览器 + OS + GPU + 屏幕 + 时区
+3. 自洽约束传播:
+   OS=Windows → platform=Win32, 字体=Win字体集
+   GPU=RTX4060 → WebGL renderer=NVIDIA, canvas hash 匹配
+   时区=Asia/Shanghai → Intl, languages=["zh-CN","zh"]
+4. 一致性校验 → 通过则输出, 否则重新采样
+```
 
-初期走方案 A（最快验证），稳定后迁移到方案 B。
+**指纹输出格式：**
 
-## 3. 与逆向工作流的集成
+```go
+type Fingerprint struct {
+    Seed       uint64
+    Browser    BrowserProfile
+    OS         OSProfile
+    GPU        GPUProfile
+    Navigator  map[string]interface{}
+    Screen     map[string]interface{}
+    Canvas     CanvasFingerprint   // toDataURL hash + measureText
+    WebGL      WebGLFingerprint    // vendor, renderer, extensions, params
+    Audio      AudioFingerprint    // AudioContext hash
+    Fonts      []string            // 可探测字体列表
+    Timezone   string              // Asia/Shanghai
+    Languages  []string            // ["zh-CN", "zh"]
+    Window     WindowProps         // innerWidth, etc.
+}
+```
 
-参照 js-reverse skill 的五阶段工作流：
+### 2.2 V8 沙箱引擎 (sandbox)
+
+**职责：** 接收指纹 + 目标 JS，在纯 V8 Isolate 中构建浏览器环境并执行。
+
+**浏览器 API mock 策略：**
+
+在 Go 侧构建 mock 对象，通过 v8go 注入 V8 context。不是用 JS 写 mock，而是 Go 原生注入——更难被检测。
+
+```go
+// Go 侧构建 navigator 对象
+nav := v8go.NewObject(iso)
+nav.Set("userAgent", fp.Navigator["userAgent"])
+nav.Set("platform", fp.Navigator["platform"])
+nav.Set("webdriver", false)
+// ... 注入全套属性
+
+// 注入到 context 全局
+global := ctx.Global()
+global.Set("navigator", nav)
+global.Set("window", global)    // window = globalThis
+global.Set("self", global)
+global.Set("top", global)       // 不用 Proxy，直接引用
+```
+
+**模块结构：**
+
+```
+sandbox/
+├── engine.go          # 沙箱引擎: Create(session) → Sandbox
+├── isolate_pool.go    # Isolate 池化: 预热/复用/回收
+├── browser_env.go     # 浏览器环境构建 (Go → V8 注入)
+├── dom_mock.go        # DOM 最小子集 (Go 实现)
+├── timers.go          # 事件循环模拟
+├── console.go         # console.log/error/warn mock
+└── tracing.go         # 执行追踪 (first divergence 定位)
+```
+
+**Isolate 池化：**
+
+```go
+type IsolatePool struct {
+    isolates chan *v8go.Isolate  // 带缓冲 channel
+    factory  func() *v8go.Isolate
+}
+
+func (p *IsolatePool) Get() *v8go.Isolate {
+    select {
+    case iso := <-p.isolates:
+        return iso  // 复用
+    default:
+        return p.factory()  // 新建
+    }
+}
+
+func (p *IsolatePool) Put(iso *v8go.Isolate) {
+    // 重置 context，保留 isolate
+    p.isolates <- iso
+}
+```
+
+**Node 痕迹抹除（v2 优势）：**
+
+v8go 创建的 Isolate **天然没有** Buffer/process/require/module。这是相比 Node vm 的根本优势——不是「抹除」，而是「从不存在」。
+
+### 2.3 网络层 (netlayer)
+
+**职责：** 沙箱内网络请求的处理——离线 replay + 在线转发 + session-unique。
+
+**双模式：**
+
+```
+模式 1: 离线 Replay
+┌──────┐     ┌──────────┐     ┌──────────┐
+│沙箱JS │ XHR │ Replay   │ 查找 │ Recording│
+│      │────▶│ Handler  │────▶│  Store   │
+│      │     │          │     │ (JSON)   │
+│      │◀────│          │◀────│          │
+└──────┘     └──────────┘     └──────────┘
+  不发真请求，从录制中取响应
+
+模式 2: 在线转发
+┌──────┐     ┌──────────┐     ┌──────────────┐
+│沙箱JS │ XHR │ Forward  │ HTTP│ curl-impersonate│
+│      │────▶│ Handler  │────▶│ (TLS 指纹匹配) │
+│      │     │          │     │ + 代理 IP     │
+│      │◀────│          │◀────│              │
+└──────┘     └──────────┘     └──────────────┘
+  发真请求，TLS 指纹与 UA 一致
+```
+
+**模块结构：**
+
+```
+netlayer/
+├── handler.go        # XHR/fetch 拦截 + 分发
+├── replay.go         # 离线 replay 引擎
+├── forward.go        # 在线转发 (curl-impersonate)
+├── recording.go      # 请求录制 + 存储
+├── cookie_jar.go     # Cookie 管理 (与 document.cookie 联动)
+├── tls_profile.go    # TLS 指纹配置 (JA3/JA4)
+└── proxy.go          # 代理管理 (per-session)
+```
+
+**Session-Unique 实现：**
+
+```go
+type NetworkSession struct {
+    ID          string
+    Fingerprint *Fingerprint      // 绑定指纹
+    TLSProfile  *TLSProfile       // JA3 与 UA 版本一致
+    CookieJar   *CookieJar        // 独立 cookie
+    Proxy       string            // 独立代理 IP
+    Recording   *Recording        // 可选: 录制本 session 请求
+}
+```
+
+多账号操作时，每个 session 的 TLS 指纹、cookie、IP、UA 全部不同，零关联。
+
+### 2.4 调试层 (debug)
+
+**职责：** 暴露 CDP (Chrome DevTools Protocol) 接口，让真 Chrome DevTools 能连上来调试沙箱内的 JS。
+
+**核心能力：**
+- `chrome://inspect` → 连接沙箱
+- Network panel → 看沙箱内的 XHR/fetch 请求
+- Sources panel → 断点、步进、变量查看
+- Console → 沙箱内的 console.log 输出
+- Performance → 执行时间分析
+
+**模块结构：**
+
+```
+debug/
+├── cdp_server.go      # CDP WebSocket 服务器
+├── cdp_domains.go     # CDP 域实现 (Network/Runtime/Debugger)
+├── request_capture.go # 请求采集 (与 netlayer 联动)
+├── breakpoint.go      # 断点管理
+└── console.go         # console 消息转发
+```
+
+**CDP 域映射：**
+
+| CDP 域 | 功能 | 实现 |
+|--------|------|------|
+| Runtime | evaluate, callFunctionOn | v8go ctx.RunScript |
+| Debugger | pause, resume, setBreakpoint | v8go debugger API |
+| Network | requestWillBeSent, responseReceived | netlayer 事件转发 |
+| Console | messageAdded | sandbox console mock |
+| Page | navigate, getNavigationHistory | location mock |
+
+### 2.5 桥接层 (bridge)
+
+**职责：** gRPC 服务 + 多语言 SDK，让任何语言都能用沙箱。
+
+**架构：**
+
+```
+                    gRPC (protobuf)
+Go Core ◄──────────────────────────────────────► Python SDK
+  │                                                Go SDK
+  │                                                Node SDK
+  │                                                CLI (bes)
+  │
+  └── CGO/FFI (可选, 高性能内嵌)
+```
+
+**Protobuf 定义：**
+
+```protobuf
+service SandboxService {
+  rpc CreateSession(CreateSessionRequest) returns (Session);
+  rpc Eval(EvalRequest) returns (EvalResponse);
+  rpc LoadScript(LoadScriptRequest) returns (LoadScriptResponse);
+  rpc CallFunction(CallRequest) returns (CallResponse);
+  rpc GetFingerprint(FPRequest) returns (Fingerprint);
+  rpc CloseSession(CloseRequest) returns (CloseResponse);
+  rpc StreamConsole(StreamRequest) returns (stream ConsoleMessage);
+  rpc StreamNetwork(StreamRequest) returns (stream NetworkEvent);
+}
+```
+
+**模块结构：**
+
+```
+bridge/
+├── server.go         # gRPC 服务器
+├── service.go        # SandboxService 实现
+├── session_mgr.go    # 会话管理 (多 session 并发)
+└── proto/
+    └── sandbox.proto  # protobuf 定义
+```
+
+**SDK 结构：**
+
+```
+sdk/
+├── python/
+│   ├── bes/__init__.py    # from bes import Sandbox
+│   ├── bes/client.py      # gRPC 客户端
+│   └── bes/fingerprint.py # 指纹辅助
+├── go/
+│   └── bes.go             # import "bes/sdk/go"
+├── node/
+│   └── bes.js             # const { Sandbox } = require('bes')
+└── cli/
+    └── bes/               # bes CLI (Go 编译)
+```
+
+## 3. Session 生命周期
+
+```
+创建 Session
+  │
+  ├── 1. 指纹引擎生成指纹 (种子 or 随机)
+  ├── 2. 网络层创建 session (TLS + cookie + proxy)
+  ├── 3. 沙箱引擎从池中取 Isolate
+  ├── 4. 指纹灌入 + 浏览器 API 注入
+  │
+  ▼
+Session 就绪
+  │
+  ├── eval(code)          → 执行 JS
+  ├── loadScript(file)    → 加载脚本
+  ├── callFunction(...)   → 调用函数
+  ├── getFingerprint()    → 查看指纹
+  ├── streamConsole()     → console 流
+  ├── streamNetwork()     → 网络流
+  │
+  ▼
+关闭 Session
+  │
+  ├── Isolate 重置 → 归还池
+  ├── Cookie jar 持久化 (可选)
+  └── 网络资源释放
+```
+
+## 4. 项目结构
+
+```
+browser-env-sandbox/
+├── go.mod
+├── README.md
+├── ARCHITECTURE.md           ← 本文件
+├── docs/
+│   ├── design-constraints.md ← 实战经验, 适用
+│   ├── roadmap.md
+│   └── fingerprint-kb.md     ← 指纹知识库文档
+├── cmd/
+│   ├── bes/                  ← CLI 入口
+│   │   └── main.go
+│   └── bes-server/           ← gRPC 服务入口
+│       └── main.go
+├── internal/
+│   ├── fpengine/             ← 指纹引擎
+│   ├── sandbox/              ← V8 沙箱引擎
+│   ├── netlayer/             ← 网络层
+│   ├── debug/                ← 调试层 (CDP)
+│   └── bridge/               ← gRPC 桥接
+├── pkg/
+│   └── api/                  ← 公共 API 类型
+├── sdk/
+│   ├── python/
+│   ├── go/
+│   └── node/
+├── experiments/
+│   └── sso-waf-challenge/    ← 第一验证场景
+
+    └── reference/           ← Node.js 代码 (参考)
+```
+
+## 5. 与逆向工作流的集成
 
 ```
 Observe → Capture → Rebuild → Patch → DeepDive
-                              ↑         ↑
-                    本项目覆盖区域
+                     │          │        │
+                     │   ┌──────┘        │
+                     │   │               │
+                     ▼   ▼               ▼
+              ┌─────────────┐    ┌──────────────┐
+              │ 沙箱 Rebuild  │    │ 调试层 CDP    │
+              │ 指纹灌入      │    │ 断点+请求采集  │
+              │ 目标 JS 执行   │    │ 去混淆分析     │
+              └─────────────┘    └──────────────┘
 ```
 
-- **Rebuild 阶段**：从 Capture 阶段拿到的页面证据（脚本 URL、参数样例、调用顺序），在沙箱中重建执行环境
-- **Patch 阶段**：按报错和 first divergence 驱动补环境，直到沙箱内稳定跑出目标参数
-- **DeepDive 阶段**：沙箱跑通后，可在其中插桩、去混淆、提取算法
+## 6. 设计约束继承
 
-## 4. 模块依赖关系
+10 条实战经验适用于本项目，且架构天然解决其中几条：
 
-```
-index.js (入口)
-  ├── snapshot/loader.js ──→ snapshots/chrome-XXX.json
-  │
-  ├── sandbox/context.js (vm.createContext 封装)
-  │     ├── sandbox/browser-env.js (环境构建)
-  │     │     ├── navigator ← 快照
-  │     │     ├── screen ← 快照
-  │     │     ├── document + dom-mock.js
-  │     │     ├── location (可配置)
-  │     │     ├── storage mock
-  │     │     ├── performance mock
-  │     │     └── timers (vm 内)
-  │     │
-  │     └── sandbox/network-bridge.js
-  │           └── curl_cffi (Python subprocess / HTTP service)
-  │
-  └── utils/logger.js
-```
+| 约束 | Node.js vm | Go + v8go |
+|------|-------------|----------------|
+| Node 痕迹抹除 | 需手动设 undefined | **天然不存在** |
+| top/parent 不用 Proxy | 手动自引用 | Go 注入直接引用 |
+| toString 伪装 | JS Object.defineProperty | Go 侧设置 toStringTag |
+| navigator 冻结 | Object.freeze | Go 侧只读注入 |
+| canary 探针 | 不用 Proxy | Go 注入, 不存在的属性天然 undefined |
 
-## 5. 使用流程
-
-```
-1. dump 快照 (一次性)
-   $ node src/snapshot/cdp-dump.js
-   → snapshots/chrome-131.json
-
-2. 配置环境
-   const sandbox = createSandbox({
-     snapshot: 'chrome-131',
-     location: 'https://example.com/login',
-     cookies: { ... }
-   });
-
-3. 执行目标 JS
-   const result = sandbox.eval(targetJsCode);
-   → { signature, cookies, tokens }
-
-4. 提取产出
-   sandbox.document.cookie  → 完整 cookie jar
-   sandbox.window.__    → SDK 运行时状态
-```
-
-## 6. 扩展性设计
-
-- **快照可插拔** — 不同 Chrome 版本、不同设备类型（PC/Mobile）的快照可热切换
-- **DOM mock 可扩展** — 目标需要新的 DOM API 时，在 `dom-mock.js` 中增量添加
-- **网络层可替换** — NetBridge 接口统一，底层可换 curl_cffi / got / axios
-- **插件系统** — 预留 hook 机制，允许在 eval 前后注入自定义逻辑（如自动 hook 加密函数）
+详见 [docs/design-constraints.md](docs/design-constraints.md)
