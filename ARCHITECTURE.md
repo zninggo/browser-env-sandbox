@@ -384,7 +384,7 @@ browser-env-sandbox/
 ├── README.md
 ├── ARCHITECTURE.md           ← 本文件
 ├── docs/
-│   ├── design-constraints.md ← 实战经验, 适用
+│   ├── design-constraints.md ← 浏览器环境模拟实战经验
 │   ├── roadmap.md
 │   └── fingerprint-kb.md     ← 指纹知识库文档
 ├── cmd/
@@ -421,9 +421,9 @@ Observe → Capture → Rebuild → Patch → DeepDive
               └─────────────┘    └──────────────┘
 ```
 
-## 6. 设计约束继承
+## 6. 设计约束
 
-10 条实战经验适用于本项目，且架构天然解决其中几条：
+以下 10 条实战经验适用于本项目，且 Go + v8go 架构天然解决其中几条：
 
 | 约束 | Node.js vm | Go + v8go |
 |------|-------------|----------------|
