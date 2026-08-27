@@ -3,7 +3,7 @@ package sandbox
 import (
 	"sync"
 
-	v8 "rogchap.com/v8go"
+	"rogchap.com/v8go"
 )
 
 // IsolatePool manages a pool of V8 Isolates for reuse.
