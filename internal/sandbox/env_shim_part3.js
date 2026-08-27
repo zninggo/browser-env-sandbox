@@ -340,4 +340,15 @@
     };
   }
 
+  // ── Iterator (Chrome global) ──
+  if (typeof Iterator === 'undefined') {
+    window.Iterator = function() { throw new TypeError('Iterator is a constructor; use Symbol.iterator'); };
+    window.Iterator.prototype = Object.create(Object.prototype);
+    window.Iterator.prototype[Symbol.iterator] = function() { return this; };
+    window.Iterator.from = function(iterable) {
+      if (iterable && typeof iterable[Symbol.iterator] === 'function') return iterable[Symbol.iterator]();
+      throw new TypeError('not iterable');
+    };
+  }
+
 })();
