@@ -20,6 +20,51 @@ type TLSProfile struct {
 // These match the curl_cffi impersonate targets.
 func DefaultTLSProfiles() map[string]*TLSProfile {
 	return map[string]*TLSProfile{
+		"chrome155": {
+			Browser:     "chrome",
+			Version:     "155",
+			Impersonate: "chrome150", // curl_cffi max is 150, use closest
+			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
+			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+		},
+		"chrome150": {
+			Browser:     "chrome",
+			Version:     "150",
+			Impersonate: "chrome150",
+			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
+			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+		},
+		"chrome146": {
+			Browser:     "chrome",
+			Version:     "146",
+			Impersonate: "chrome146",
+			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
+			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+		},
+		"chrome142": {
+			Browser:     "chrome",
+			Version:     "142",
+			Impersonate: "chrome142",
+			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
+			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+		},
+		"chrome136": {
+			Browser:     "chrome",
+			Version:     "136",
+			Impersonate: "chrome136",
+			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
+			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+		},
 		"chrome131": {
 			Browser:     "chrome",
 			Version:     "131",
@@ -38,15 +83,6 @@ func DefaultTLSProfiles() map[string]*TLSProfile {
 			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
 			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
 		},
-		"chrome120": {
-			Browser:     "chrome",
-			Version:     "120",
-			Impersonate: "chrome120",
-			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
-			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
-			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
-		},
 	}
 }
 
@@ -59,7 +95,7 @@ func GetTLSProfile(browser, version string) *TLSProfile {
 		return p
 	}
 	// Fallback: use the closest version
-	return profiles["chrome131"]
+	return profiles["chrome150"]
 }
 
 // ProxyConfig holds per-session proxy configuration.

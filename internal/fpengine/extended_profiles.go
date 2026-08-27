@@ -13,15 +13,15 @@ func ExtendedKnowledgeBase() *KnowledgeBase {
 	kb.Browsers = append(kb.Browsers,
 		BrowserEntry{
 			Name:       "firefox",
-			Version:    "130",
-			MajorVer:   130,
-			UATemplate: "Mozilla/5.0 (%s; rv:130.0) Gecko/20100101 Firefox/130.0",
+			Version:    "140",
+			MajorVer:   140,
+			UATemplate: "Mozilla/5.0 (%s; rv:140.0) Gecko/20100101 Firefox/140.0",
 		},
 		BrowserEntry{
 			Name:       "firefox",
-			Version:    "129",
-			MajorVer:   129,
-			UATemplate: "Mozilla/5.0 (%s; rv:129.0) Gecko/20100101 Firefox/129.0",
+			Version:    "135",
+			MajorVer:   135,
+			UATemplate: "Mozilla/5.0 (%s; rv:135.0) Gecko/20100101 Firefox/135.0",
 		},
 	)
 
@@ -29,9 +29,9 @@ func ExtendedKnowledgeBase() *KnowledgeBase {
 	kb.Browsers = append(kb.Browsers,
 		BrowserEntry{
 			Name:       "safari",
-			Version:    "17",
-			MajorVer:   17,
-			UATemplate: "Mozilla/5.0 (%s) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+			Version:    "18",
+			MajorVer:   18,
+			UATemplate: "Mozilla/5.0 (%s) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
 		},
 	)
 
@@ -68,9 +68,13 @@ func ExtendedKnowledgeBase() *KnowledgeBase {
 		{InnerWidth: 360, InnerHeight: 780, OuterWidth: 360, OuterHeight: 780, DevicePixelRatio: 3, ScreenX: 0, ScreenY: 0},
 	}
 
-	// ── Chrome versions 132-135 ──
+	// ── Chrome versions 137-154 (between 136 and 155, for broader coverage) ──
 	for _, v := range []struct{ ver string; major int }{
-		{"132", 132}, {"133", 133}, {"134", 134}, {"135", 135},
+		{"137", 137}, {"138", 138}, {"139", 139}, {"140", 140},
+		{"141", 141}, {"143", 143}, {"144", 144}, {"147", 147},
+		{"148", 148}, {"149", 149}, {"151", 151}, {"153", 153}, {"154", 154},
+		// Older versions (for compatibility with older TLS profiles)
+		{"131", 131}, {"124", 124}, {"120", 120},
 	} {
 		kb.Browsers = append(kb.Browsers, BrowserEntry{
 			Name:       "chrome",

@@ -28,7 +28,7 @@ func NewCurlImpersonate(binaryPath, target string) *CurlImpersonate {
 		binaryPath = "/usr/local/bin"
 	}
 	if target == "" {
-		target = "chrome116"
+		target = "chrome150"
 	}
 	return &CurlImpersonate{
 		binaryPath: binaryPath,
@@ -179,7 +179,7 @@ func NewCurlCffi(pythonPath, target string) *CurlCffiClient {
 		pythonPath = "python3"
 	}
 	if target == "" {
-		target = "chrome131"
+		target = "chrome150"
 	}
 	return &CurlCffiClient{
 		pythonPath: pythonPath,
