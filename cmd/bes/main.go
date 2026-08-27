@@ -23,8 +23,12 @@ func main() {
 		cmdFingerprint(os.Args[2:])
 	case "run":
 		cmdRun(os.Args[2:])
+	case "export-fp":
+		cmdExportFP(os.Args[2:])
+	case "selftest":
+		cmdSelftest(os.Args[2:])
 	case "version":
-		fmt.Println("bes v0.1.0 (V8 engine:", "v8go)")
+		fmt.Println("bes v0.2.0 (V8 engine: v8go v0.9.0, V8 9.0)")
 	default:
 		usage()
 		os.Exit(1)
@@ -37,8 +41,42 @@ func usage() {
 Usage:
   bes fingerprint [--browser chrome] [--os windows] [--seed 0]
   bes run --script <file> [--fingerprint auto] [--location <url>]
+  bes export-fp --output <file> [--browser chrome] [--os windows] [--seed 0]
+  bes selftest
   bes version
 `)
+}
+
+func cmdExportFP(args []string) {
+	fs := flag.NewFlagSet("export-fp", flag.ExitOnError)
+	browser := fs.String("browser", "chrome", "Browser type")
+	osName := fs.String("os", "windows", "Operating system")
+	seed := fs.Uint64("seed", 0, "Fingerprint seed (0 = random)")
+	output := fs.String("output", "", "Output file path (required)")
+	fs.Parse(args)
+
+	if *output == "" {
+		fmt.Fprintln(os.Stderr, "Error: --output required")
+		os.Exit(1)
+	}
+
+	eng := fpengine.New()
+	fp, err := eng.Generate(*seed, *browser, *osName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := fpengine.ExportToFile(fp, *output); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Fingerprint exported to %s (seed: %d)\n", *output, fp.Seed)
+}
+
+func cmdSelftest(args []string) {
+	// Delegate to bes-selftest binary
+	fmt.Println("Run ./bes-selftest for the full self-test suite")
 }
 
 func cmdFingerprint(args []string) {

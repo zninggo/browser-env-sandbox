@@ -131,6 +131,82 @@ func main() {
 		// ── fetch / XMLHttpRequest ──
 		{"typeof fetch = function", `typeof fetch`, "function"},
 		{"typeof XMLHttpRequest = function", `typeof XMLHttpRequest`, "function"},
+		// ── Shim-injected APIs (env_shim_part1/2/3.js) ──
+		// Navigator extensions
+		{"navigator.plugins exists", `typeof navigator.plugins`, "object"},
+		{"navigator.plugins.length > 0", `navigator.plugins.length > 0`, "true"},
+		{"navigator.mimeTypes exists", `typeof navigator.mimeTypes`, "object"},
+		{"navigator.mediaDevices exists", `typeof navigator.mediaDevices`, "object"},
+		{"navigator.mediaDevices.enumerateDevices", `typeof navigator.mediaDevices.enumerateDevices`, "function"},
+		{"navigator.serviceWorker exists", `typeof navigator.serviceWorker`, "object"},
+		{"navigator.clipboard exists", `typeof navigator.clipboard`, "object"},
+		{"navigator.geolocation exists", `typeof navigator.geolocation`, "object"},
+		{"navigator.bluetooth exists", `typeof navigator.bluetooth`, "object"},
+		{"navigator.credentials exists", `typeof navigator.credentials`, "object"},
+		{"navigator.storage exists", `typeof navigator.storage`, "object"},
+		{"navigator.getBattery exists", `typeof navigator.getBattery`, "function"},
+		// Global constructors
+		{"typeof TextEncoder = function", `typeof TextEncoder`, "function"},
+		{"typeof TextDecoder = function", `typeof TextDecoder`, "function"},
+		{"typeof URLSearchParams = function", `typeof URLSearchParams`, "function"},
+		{"typeof URL = function", `typeof URL`, "function"},
+		{"typeof Blob = function", `typeof Blob`, "function"},
+		{"typeof FormData = function", `typeof FormData`, "function"},
+		{"typeof AbortController = function", `typeof AbortController`, "function"},
+		{"typeof DOMException = function", `typeof DOMException`, "function"},
+		{"typeof DOMParser = function", `typeof DOMParser`, "function"},
+		{"typeof Notification = function", `typeof Notification`, "function"},
+		{"typeof RTCPeerConnection = function", `typeof RTCPeerConnection`, "function"},
+		{"typeof WebSocket = function", `typeof WebSocket`, "function"},
+		{"typeof Worker = function", `typeof Worker`, "function"},
+		{"typeof ResizeObserver = function", `typeof ResizeObserver`, "function"},
+		{"typeof IntersectionObserver = function", `typeof IntersectionObserver`, "function"},
+		// Utility functions
+		{"typeof atob = function", `typeof atob`, "function"},
+		{"typeof btoa = function", `typeof btoa`, "function"},
+		{"typeof matchMedia = function", `typeof matchMedia`, "function"},
+		{"typeof CSS = object", `typeof CSS`, "object"},
+		{"typeof CSS.supports = function", `typeof CSS.supports`, "function"},
+		{"typeof structuredClone = function", `typeof structuredClone`, "function"},
+		{"typeof URL.createObjectURL = function", `typeof URL.createObjectURL`, "function"},
+		// atob/btoa functional test
+		{"atob/btoa roundtrip", `atob(btoa('hello')) === 'hello'`, "true"},
+		// TextEncoder functional test
+		{"TextEncoder.encode", `new TextEncoder().encode('test').length`, "4"},
+		// WebRTC
+		{"RTCPeerConnection createOffer", `typeof new RTCPeerConnection().createOffer`, "function"},
+		// WebSocket states
+		{"WebSocket.CONNECTING = 0", `String(WebSocket.CONNECTING)`, "0"},
+		// indexedDB
+		{"typeof indexedDB = object", `typeof indexedDB`, "object"},
+		// DOM element enhancements
+		{"element.innerHTML set/get", `(function(){var e=document.createElement('div');e.innerHTML='<b>test</b>';return e.innerHTML})()`, "<b>test</b>"},
+		{"element.classList.add", `(function(){var e=document.createElement('div');e.classList.add('foo');return e.classList.contains('foo')})()`, "true"},
+		{"element.addEventListener", `typeof document.createElement('div').addEventListener`, "function"},
+		{"element.click", `typeof document.createElement('div').click`, "function"},
+		{"element.offsetWidth = 0", `String(document.createElement('div').offsetWidth)`, "0"},
+		// Symbol.toStringTag
+		{"navigator toString = [object Navigator]", `Object.prototype.toString.call(navigator)`, "[object Navigator]"},
+		{"document toString = [object HTMLDocument]", `Object.prototype.toString.call(document)`, "[object HTMLDocument]"},
+		{"window toString = [object Window]", `Object.prototype.toString.call(window)`, "[object Window]"},
+		// document enhancements
+		{"document.head exists", `typeof document.head`, "object"},
+		{"document.body exists", `typeof document.body`, "object"},
+		{"document.hasFocus = true", `String(document.hasFocus())`, "true"},
+		{"document.hidden = false", `String(document.hidden)`, "false"},
+		{"document.activeElement exists", `typeof document.activeElement`, "object"},
+		// window enhancements
+		{"typeof getComputedStyle = function", `typeof getComputedStyle`, "function"},
+		{"window.name = ''", `window.name`, ""},
+		{"window.origin exists", `typeof window.origin`, "string"},
+		{"window.closed = false", `String(window.closed)`, "false"},
+		{"window.opener = null", `String(window.opener)`, "null"},
+		// crypto enhancements
+		{"crypto.subtle exists", `typeof crypto.subtle`, "object"},
+		{"crypto.randomUUID exists", `typeof crypto.randomUUID`, "function"},
+		// performance enhancements
+		{"performance.timing exists", `typeof performance.timing`, "object"},
+		{"performance.memory exists", `typeof performance.memory`, "object"},
 	}
 
 	passed := 0
