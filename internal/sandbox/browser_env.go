@@ -433,6 +433,16 @@ func (p *PostContextBuilder) Build() {
 		});
 	`)
 	p.ctx.RunScript(cookieShim, "cookie-shim.js")
+
+	// Inject complex navigator properties that can't be set via ObjectTemplate
+	// (v8go Set only accepts primitives, FunctionTemplate, ObjectTemplate)
+	p.injectComplexNavigator()
+
+	// Inject permissions API (navigator.permissions)
+	p.injectPermissions()
+
+	// Inject fetch + XMLHttpRequest
+	p.injectFetchXHR()
 }
 
 // --- helpers ---
@@ -528,4 +538,126 @@ func injectWebGL(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerprin
 		"createBuffer", "bindBuffer", "bufferData"} {
 		ctx.Set(m, v8go.NewFunctionTemplate(iso, noopCallback))
 	}
+}
+
+// --- PostContext complex injections ---
+
+// injectComplexNavigator injects map/slice navigator properties via JS
+// (v8go ObjectTemplate.Set can't handle Go maps/slices directly)
+func (p *PostContextBuilder) injectComplexNavigator() {
+	// navigator.languages
+	langs := p.fp.Languages
+	langArr := "["
+	for i, l := range langs {
+		if i > 0 {
+			langArr += ","
+		}
+		langArr += fmt.Sprintf("%q", l)
+	}
+	langArr += "]"
+
+	// navigator.userAgentData
+	uad := p.fp.Navigator["userAgentData"]
+	uadJSON := "{}"
+	if uad != nil {
+		if m, ok := uad.(map[string]any); ok {
+			// Build brands array
+			brandsStr := "[]"
+			if brands, ok := m["brands"].([]map[string]any); ok && len(brands) > 0 {
+				parts := make([]string, 0, len(brands))
+				for _, b := range brands {
+					parts = append(parts, fmt.Sprintf(`{"brand":%q,"version":%q}`, b["brand"], b["version"]))
+				}
+				brandsStr = "[" + strings.Join(parts, ",") + "]"
+			}
+			platform, _ := m["platform"].(string)
+			mobile, _ := m["mobile"].(bool)
+			uadJSON = fmt.Sprintf(`{"brands":%s,"mobile":%t,"platform":%q}`, brandsStr, mobile, platform)
+		}
+	}
+
+	// navigator.connection
+	connJSON := "{}"
+	if conn, ok := p.fp.Navigator["connection"].(map[string]any); ok {
+		connJSON = fmt.Sprintf(`{"effectiveType":%q,"rtt":%v,"downlink":%v,"saveData":false}`,
+			conn["effectiveType"], conn["rtt"], conn["downlink"])
+	}
+
+	js := fmt.Sprintf(`
+		(function(){
+			Object.defineProperty(navigator, 'languages', {value: %s, configurable: true, writable: true});
+			Object.defineProperty(navigator, 'userAgentData', {value: %s, configurable: true, writable: true});
+			Object.defineProperty(navigator, 'connection', {value: %s, configurable: true, writable: true});
+		})();
+	`, langArr, uadJSON, connJSON)
+	p.ctx.RunScript(js, "nav-complex.js")
+}
+
+// injectPermissions adds navigator.permissions API
+func (p *PostContextBuilder) injectPermissions() {
+	js := `
+		(function(){
+			var permissions = {
+				query: function(desc) {
+					return Promise.resolve({state: 'prompt', name: desc.name});
+				}
+			};
+			Object.defineProperty(navigator, 'permissions', {value: permissions, configurable: true});
+		})();
+	`
+	p.ctx.RunScript(js, "permissions.js")
+}
+
+// injectFetchXHR adds fetch and XMLHttpRequest stubs via JS
+func (p *PostContextBuilder) injectFetchXHR() {
+	js := `
+		(function(){
+			// fetch stub — real impl in Phase 4 via netlayer
+			window.fetch = function(resource, options) {
+				var mockResp = {
+					ok: true,
+					status: 200,
+					headers: { get: function() { return null; } },
+					json: function() { return Promise.resolve({}); },
+					text: function() { return Promise.resolve(''); },
+					arrayBuffer: function() { return Promise.resolve(new ArrayBuffer(0)); }
+				};
+				return Promise.resolve(mockResp);
+			};
+
+			// XMLHttpRequest stub
+			window.XMLHttpRequest = function() {
+				this.readyState = 0;
+				this.status = 0;
+				this.responseText = '';
+				this.response = '';
+				this.onreadystatechange = null;
+				this.onload = null;
+				this.onerror = null;
+				this._method = 'GET';
+				this._url = '';
+				this._headers = {};
+			};
+			window.XMLHttpRequest.prototype.open = function(method, url) {
+				this._method = method;
+				this._url = url;
+				this.readyState = 1;
+				if (this.onreadystatechange) this.onreadystatechange();
+			};
+			window.XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+				this._headers[name] = value;
+			};
+			window.XMLHttpRequest.prototype.send = function(body) {
+				// Stub: real impl in Phase 4 via netlayer
+			};
+			window.XMLHttpRequest.prototype.getAllResponseHeaders = function() {
+				return '';
+			};
+			window.XMLHttpRequest.prototype.getResponseHeader = function(name) {
+				return null;
+			};
+			window.XMLHttpRequest.prototype.abort = function() {};
+		})();
+	`
+	p.ctx.RunScript(js, "fetch-xhr.js")
 }
