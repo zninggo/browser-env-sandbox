@@ -351,4 +351,26 @@
     };
   }
 
+  // ── Image constructor (used by 
+  if (typeof Image === 'undefined') {
+    window.Image = function(width, height) {
+      var el = document.createElement('img');
+      if (width !== undefined) el.width = width;
+      if (height !== undefined) el.height = height;
+      return el;
+    };
+  }
+
+  // ── PluginArray / MimeTypeArray constructors ──
+  if (typeof PluginArray === 'undefined') {
+    window.PluginArray = function() {};
+    window.PluginArray.prototype = Object.create(Object.prototype);
+    Object.defineProperty(window.PluginArray.prototype, Symbol.toStringTag, { value: 'PluginArray' });
+  }
+  if (typeof MimeTypeArray === 'undefined') {
+    window.MimeTypeArray = function() {};
+    window.MimeTypeArray.prototype = Object.create(Object.prototype);
+    Object.defineProperty(window.MimeTypeArray.prototype, Symbol.toStringTag, { value: 'MimeTypeArray' });
+  }
+
 })();
