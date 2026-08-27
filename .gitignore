@@ -12,9 +12,9 @@ node_modules/
 snapshots/*.json
 !snapshots/.gitkeep
 
-# Experiment artifacts
-experiments/*/output/
-experiments/*/logs/
+# Experiment artifacts (experiments dir removed from repo, keep dir for local use)
+experiments/
+eval_sites.js
 
 # OS files
 .DS_Store

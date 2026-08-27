@@ -5,13 +5,22 @@ services:
     build: .
     container_name: bes-server
     ports:
-      - "127.0.0.1:19821:8080"  # 仅监听回环，由反向代理暴露外网
+      - "19821:19821"   # JSON-RPC API
+      - "9223:9223"     # CDP debug
     environment:
-      - BES_POOL_SIZE=4
-      - BES_AUTH_TOKEN=${BES_AUTH_TOKEN:?请在 .env 文件设置 BES_AUTH_TOKEN}
+      - BES_LOG_LEVEL=info
+      - BES_POOL_SIZE=8
+    volumes:
+      - ./snapshots:/app/snapshots           # Fingerprint snapshots
+      - ./recordings:/app/recordings         # Network recordings for replay
+      - bes-data:/app/data                   # Persistent data (profiles, cookies)
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      test: ["CMD", "bes", "version"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  bes-data:
+    driver: local
