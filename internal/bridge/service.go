@@ -307,6 +307,28 @@ func (s *Service) SubscribeNetwork(id string) (<-chan NetworkEvent, func(), erro
 
 // PublishNetworkEvent injects a network event into a session's stream. This is
 // the hook the Phase 4 netlayer will call when fetch/XHR are wired to Go.
+
+// 
+// session's 
+func (s *Service) 
+	e, ok := s.getEntry(id)
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", id)
+	}
+
+// 
+type 
+	    string `json:"x_
+	    string `json:"
+	Len int    `json:"
+}
+
+func trimQuotes(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
 func (s *Service) PublishNetworkEvent(id string, evt NetworkEvent) {
 	e, ok := s.getEntry(id)
 	if !ok {
