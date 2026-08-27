@@ -20,6 +20,7 @@ type EnvBuilder struct {
 	location    string
 	cookieStore *CookieStore
 	timerMgr    *TimerManager
+	consoleSink ConsoleSink
 }
 
 // Build injects all browser globals into the ObjectTemplate.
@@ -259,7 +260,12 @@ func (b *EnvBuilder) injectConsole() {
 			for i, a := range args {
 				parts[i] = a.String()
 			}
-			fmt.Printf("[console.%s] %s\n", m, strings.Join(parts, " "))
+			msg := strings.Join(parts, " ")
+			if b.consoleSink != nil {
+				b.consoleSink.Write(m, msg)
+			} else {
+				fmt.Printf("[console.%s] %s\n", m, msg)
+			}
 			return nil
 		}))
 	}
