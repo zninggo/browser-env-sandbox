@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Environment snapshots (may contain sensitive browser fingerprints)
+snapshots/*.json
+!snapshots/.gitkeep
+
+# Experiment artifacts
+experiments/*/output/
+experiments/*/logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
