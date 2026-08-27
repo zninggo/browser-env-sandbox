@@ -30,7 +30,7 @@ type Handler struct {
 	replay     *ReplayStore
 	cookieJar  map[string]string
 	proxy      string
-	tlsProfile string
+	tlsClient  *TLSClient
 	mu         sync.Mutex
 	recordings []RecordedRequest
 	recording  bool
@@ -53,7 +53,9 @@ type RecordedResponse struct {
 }
 
 // New creates a network handler with the given mode.
-func New(mode Mode, replayFile string, proxy string) (*Handler, error) {
+// tlsTarget is the curl-impersonate/curl_cffi target for live mode TLS
+// fingerprint matching (e.g. "chrome150"). Empty string defaults to "chrome150".
+func New(mode Mode, replayFile, proxy, tlsTarget string) (*Handler, error) {
 	h := &Handler{
 		mode:      mode,
 		cookieJar: make(map[string]string),
@@ -67,6 +69,16 @@ func New(mode Mode, replayFile string, proxy string) (*Handler, error) {
 			return nil, fmt.Errorf("failed to load replay: %w", err)
 		}
 		h.replay = store
+	}
+
+	if mode == ModeLive {
+		if tlsTarget == "" {
+			tlsTarget = "chrome150"
+		}
+		h.tlsClient = NewTLSClient(tlsTarget)
+		if proxy != "" {
+			h.tlsClient.SetProxy(proxy)
+		}
 	}
 
 	return h, nil
@@ -118,8 +130,45 @@ func (h *Handler) handleReplay(method, urlStr string) (*Response, error) {
 }
 
 func (h *Handler) handleLive(method, urlStr string, headers map[string]string, body []byte) (*Response, error) {
-	// TODO: Phase 4 — integrate curl-impersonate for TLS fingerprint matching.
-	// For now, use standard Go HTTP client (no TLS fingerprint spoofing).
+	// Inject cookies into headers
+	h.mu.Lock()
+	if len(h.cookieJar) > 0 {
+		cookieParts := make([]string, 0, len(h.cookieJar))
+		for k, v := range h.cookieJar {
+			cookieParts = append(cookieParts, k+"="+v)
+		}
+		if headers == nil {
+			headers = make(map[string]string)
+		}
+		headers["Cookie"] = strings.Join(cookieParts, "; ")
+	}
+	h.mu.Unlock()
+
+	// Use TLSClient (curl-impersonate → curl_cffi → standard HTTP fallback)
+	// for TLS fingerprint matching with the UA version.
+	if h.tlsClient != nil {
+		resp, err := h.tlsClient.Request(method, urlStr, headers, body)
+		if err != nil {
+			return nil, fmt.Errorf("TLS client request failed: %w", err)
+		}
+
+		// Update cookie jar from Set-Cookie
+		if resp.Cookies != nil {
+			h.mu.Lock()
+			for k, v := range resp.Cookies {
+				h.cookieJar[k] = v
+			}
+			h.mu.Unlock()
+		}
+
+		return resp, nil
+	}
+
+	// Fallback: standard Go HTTP client (no TLS fingerprint spoofing)
+	return h.handleLiveFallback(method, urlStr, headers, body)
+}
+
+func (h *Handler) handleLiveFallback(method, urlStr string, headers map[string]string, body []byte) (*Response, error) {
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
