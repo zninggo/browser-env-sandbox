@@ -114,10 +114,6 @@ result = sandbox.call("sign", params)
 
 详见 [docs/roadmap.md](docs/roadmap.md)
 
-## 设计约束（来自 实战经验）
-
-详见 [docs/design-constraints.md](docs/design-constraints.md) — 10 条血泪经验，全部继承。
-
 ## License
 
 MIT
