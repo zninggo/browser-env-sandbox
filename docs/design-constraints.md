@@ -17,7 +17,7 @@
 
 ## 2. document.URL / location.href 必须可配置
 
-**踩坑场景：**  的 
+**踩坑场景：** 目标网站的 JS 读取 `document.URL` 和 `location.href` 进行校验，如果两者不可配置或不一致，签名计算会失败
 
 **正确做法：**
 - `document.URL` 和 `location.href` 必须在创建沙箱时可注入

@@ -10,7 +10,7 @@
 - **V8 沙箱** — 纯 V8 Isolate 执行浏览器 JS，零 Node 痕迹，Isolate 池化高性能复用
 - **网络层** — 离线 replay + 在线转发双模式，session-unique 防关联
 - **调试层** — 暴露 CDP 协议，真 Chrome DevTools 可直连调试
-- **多语言桥接** — gRPC 服务 + Python/Go/Node SDK + CLI
+- **多语言桥接** — JSON-over-HTTP 服务 + Python/Go/Node SDK + CLI
 
 ## 为什么用 Go + V8
 
@@ -20,7 +20,7 @@
 | 宿主污染 | vm 外层是 Node 进程 | **零宿主**，完全可控 |
 | 沙箱隔离 | vm 有已知逃逸路径 | V8 Isolate 编译级隔离 |
 | 性能 | 单线程事件循环 | **Isolate 池化 + goroutine 并发** |
-| 多语言桥接 | 只能子进程 | **gRPC + FFI，任意语言** |
+| 多语言桥接 | 只能子进程 | **JSON-over-HTTP + SDK，任意语言** |
 | 内存安全 | JS GC | **Go GC + V8 GC 双层** |
 
 ## 架构
@@ -42,8 +42,8 @@
 │     │    │  │                                     │
 │  ┌──▼─┐│┌─▼──┐ ┌──────┐                           │
 │  │网络 │││调试 │ │ 桥接  │                           │
-│  │Net │││CDP │ │ gRPC │                           │
-│  │replay│││   │ │      │                           │
+│  │Net │││CDP │ │HTTP  │                           │
+│  │replay│││   │ │ API  │                           │
 │  │+live│││   │ │      │                           │
 │  └────┘│└───┘ └──┬───┘                           │
 │        │         │                               │
@@ -67,8 +67,8 @@ bes fingerprint --browser chrome --os windows --seed random
 # 在沙箱中执行 JS
 bes run --script target.js --fingerprint auto
 
-# 启动 gRPC 服务
-bes-server --port 50051
+# 启动 HTTP API 服务
+bes-server --port 8080 --pool 8
 
 # 离线 replay
 bes replay --recording session.json --fingerprint auto
@@ -81,7 +81,7 @@ from bes import Sandbox
 
 sandbox = Sandbox(fingerprint="auto")  # 随机自洽指纹
 sandbox.eval("navigator.userAgent")
-sandbox.load_script(".js")
+sandbox.load_script("target.js")
 result = sandbox.call("sign", params)
 ```
 
@@ -117,10 +117,6 @@ result = sandbox.call("sign", params)
 ## 设计约束（来自 实战经验）
 
 详见 [docs/design-constraints.md](docs/design-constraints.md) — 10 条血泪经验，全部继承。
-
-## 参考
-
-`reference/` 保留了最初的 Node.js vm 实现作为参考。设计约束文档从 实战中来，全部继承。
 
 ## License
 

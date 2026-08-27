@@ -10,7 +10,7 @@
 **为什么选 Go：**
 - v8go (rogchap/v8go) — 成熟的 Go V8 binding，纯 V8 Isolate
 - goroutine 并发 — 天然适合 Isolate 池化 + 多会话并发
-- gRPC 生态 — google.golang.org/grpc 是 Go 原生，桥接层零摩擦
+- gRPC 生态 — 原计划 gRPC，已改为 JSON-over-HTTP（Go 1.22 ServeMux），零 protoc 依赖
 - 编译为单二进制 — 部署简单，无运行时依赖
 - CGO — v8go 通过 CGO 调 V8，同时可 FFI 桥接 curl-impersonate
 
@@ -293,44 +293,43 @@ debug/
 
 ### 2.5 桥接层 (bridge)
 
-**职责：** gRPC 服务 + 多语言 SDK，让任何语言都能用沙箱。
+**职责：** JSON-over-HTTP API + SSE 流 + 多语言 SDK，让任何语言都能用沙箱。
 
 **架构：**
 
 ```
-                    gRPC (protobuf)
+                    JSON-over-HTTP + SSE
 Go Core ◄──────────────────────────────────────► Python SDK
   │                                                Go SDK
   │                                                Node SDK
   │                                                CLI (bes)
-  │
-  └── CGO/FFI (可选, 高性能内嵌)
 ```
 
-**Protobuf 定义：**
+**API 端点：**
 
-```protobuf
-service SandboxService {
-  rpc CreateSession(CreateSessionRequest) returns (Session);
-  rpc Eval(EvalRequest) returns (EvalResponse);
-  rpc LoadScript(LoadScriptRequest) returns (LoadScriptResponse);
-  rpc CallFunction(CallRequest) returns (CallResponse);
-  rpc GetFingerprint(FPRequest) returns (Fingerprint);
-  rpc CloseSession(CloseRequest) returns (CloseResponse);
-  rpc StreamConsole(StreamRequest) returns (stream ConsoleMessage);
-  rpc StreamNetwork(StreamRequest) returns (stream NetworkEvent);
-}
+```
+GET    /api/session                       list sessions
+POST   /api/session                       create session (supports preload + init)
+POST   /api/session/{id}/eval             evaluate JS
+POST   /api/session/{id}/script           load & run a named script
+POST   /api/session/{id}/call             call a global function
+GET    /api/session/{id}/fingerprint      get full fingerprint
+GET    /api/session/{id}/cookies          get cookie jar
+POST   /api/session/{id}/cookies          set a cookie
+DELETE /api/session/{id}                  close session
+GET    /api/session/{id}/stream/console   SSE stream of console messages
+GET    /api/session/{id}/stream/network   SSE stream of network events
+GET    /health                            liveness probe
 ```
 
 **模块结构：**
 
 ```
 bridge/
-├── server.go         # gRPC 服务器
-├── service.go        # SandboxService 实现
-├── session_mgr.go    # 会话管理 (多 session 并发)
+├── server.go         # HTTP API 服务器 (Go 1.22 ServeMux)
+├── service.go        # 业务逻辑层 (session 注册表 + broadcaster)
 └── proto/
-    └── sandbox.proto  # protobuf 定义
+    └── sandbox.proto  # 已废弃 (仅参考)
 ```
 
 **SDK 结构：**
@@ -339,7 +338,7 @@ bridge/
 sdk/
 ├── python/
 │   ├── bes/__init__.py    # from bes import Sandbox
-│   ├── bes/client.py      # gRPC 客户端
+│   ├── bes/client.py      # HTTP 客户端
 │   └── bes/fingerprint.py # 指纹辅助
 ├── go/
 │   └── bes.go             # import "bes/sdk/go"
@@ -391,24 +390,20 @@ browser-env-sandbox/
 ├── cmd/
 │   ├── bes/                  ← CLI 入口
 │   │   └── main.go
-│   └── bes-server/           ← gRPC 服务入口
+│   └── bes-server/           ← HTTP API 服务入口
 │       └── main.go
 ├── internal/
 │   ├── fpengine/             ← 指纹引擎
 │   ├── sandbox/              ← V8 沙箱引擎
 │   ├── netlayer/             ← 网络层
 │   ├── debug/                ← 调试层 (CDP)
-│   └── bridge/               ← gRPC 桥接
+│   └── bridge/               ← JSON-over-HTTP 桥接
 ├── pkg/
 │   └── api/                  ← 公共 API 类型
 ├── sdk/
 │   ├── python/
 │   ├── go/
 │   └── node/
-├── experiments/
-│   └── sso-waf-challenge/    ← 第一验证场景
-
-    └── reference/           ← Node.js 代码 (参考)
 ```
 
 ## 5. 与逆向工作流的集成

@@ -40,15 +40,14 @@
 
 里程碑 M2: 沙箱可用 — 基本浏览器环境检查通过
 
-## Phase 3: sso WAF 验证场景
-- [ ] 获取 sso WAF 挑战 JS
+## Phase 3: WAF 验证场景
+- [ ] 获取目标 WAF 挑战 JS
 - [ ] 沙箱中 eval 挑战 JS
 - [ ] 报错 → 补环境迭代
-- [ ] 
 - [ ] 签名与真实浏览器对比
 - [ ] 验证报告
 
-里程碑 M3: sso WAF 签名一致 — 第一个实战验证
+里程碑 M3: WAF 签名一致 — 第一个实战验证
 
 ## Phase 4: 网络层 (netlayer)
 - [ ] XHR/fetch 拦截 (Go 侧)
@@ -73,14 +72,13 @@
 里程碑 M5: 调试层可用 — 真 Chrome DevTools 可调试沙箱
 
 ## Phase 6: 桥接层 (bridge) + SDK
-- [ ] protobuf 定义 (sandbox.proto)
-- [ ] gRPC 服务器
-- [ ] 会话管理 (多 session 并发)
-- [ ] Python SDK
-- [ ] Go SDK
-- [ ] Node SDK
-- [ ] CLI (bes)
-- [ ] **验证: Python SDK 调用沙箱跑通签名**
+- [x] JSON-over-HTTP API (Go 1.22 ServeMux)
+- [x] 会话管理 (多 session 并发)
+- [x] Python SDK
+- [x] Go SDK
+- [x] Node SDK
+- [x] CLI (bes)
+- [x] **验证: Python SDK 调用沙箱执行 JS**
 
 里程碑 M6: 桥接层可用 — 多语言 SDK 可用
 
@@ -89,36 +87,34 @@
 - [ ] 多 session 并发隔离验证
 - [ ] 快照/指纹热切换
 - [ ] 设备类型 (PC/Mobile)
-- [ ] 其他目标 SDK 验证 (, 其他 WAF)
+- [ ] 其他目标 SDK 验证 (其他 WAF)
 - [ ] 性能基准 (Isolate 池化 vs 新建)
 - [ ] 文档完善
 
 里程碑 M7: 通用平台 — 多账号反检测可用
 
-## Phase 8: 竞品对比补全 (2026-08-27 调研后)
+## Phase 8: 功能补全 (2026-08-27 调研后)
 
-详见 [docs/competitor-analysis.md](competitor-analysis.md)
-
-### P0 — 竞品普遍有而我们没有
-- [ ] Dockerfile + docker-compose 部署
-- [ ] MCP (Model Context Protocol) server 适配
+### P0 — 基础设施补全
+- [x] Dockerfile + docker-compose 部署
+- [x] MCP (Model Context Protocol) server 适配
 - [ ] 原生 Go TLS 指纹（不依赖 curl-impersonate 二进制）
 - [ ] HTTP/3 (QUIC) 支持
-- [ ] Playwright/Puppeteer 兼容层
+- [x] Playwright/Puppeteer 兼容层
 
-### P1 — 竞品常见但我们没有
-- [ ] WebGPU 指纹
-- [ ] Client Hints 完整 (Sec-CH-UA-Full-Version-List)
+### P1 — 功能增强
+- [x] WebGPU 指纹
+- [x] Client Hints 完整 (Sec-CH-UA-Full-Version-List)
 - [ ] 行为生物特征模拟 (鼠标轨迹/键盘节奏)
-- [ ] Profile 持久化 + 导入/导出/分享
-- [ ] 完整 CSS 选择器引擎
+- [x] Profile 持久化 + 导入/导出/分享
+- [x] 完整 CSS 选择器引擎
 - [ ] HTML 解析器 (DOMParser 返回真 DOM 树)
-- [ ] GUI/Dashboard (Web 管理界面)
-- [ ] 代理健康检查 + 自动切换
+- [x] GUI/Dashboard (Web 管理界面)
+- [x] 代理健康检查 + 自动切换
 
 ### P2 — 优化
 - [ ] 升级 V8 版本 (v8go V8 9.0 → deno_core 或新版 v8go)
-- [ ] 性能基准 (对照 techinz/browsers-benchmark)
+- [ ] 性能基准
 - [ ] 验证码识别集成
 
 ## 里程碑总览
@@ -127,9 +123,9 @@
 |-------|------|------|
 | M1 | 指纹引擎 | 自洽指纹通过检测 |
 | M2 | V8 沙箱 | 浏览器环境检查通过 (133/133 ✅) |
-| M3 | sso 验证 | 
+| M3 | WAF 验证 | 目标 WAF 签名一致 |
 | M4 | 网络层 | replay + 转发双模式 ✅ |
 | M5 | 调试层 | DevTools 可调试 |
 | M6 | 桥接层 | 多语言 SDK ✅ |
 | M7 | 通用化 | 多账号反检测 |
-| M8 | 竞品补全 | Docker + MCP + Playwright 兼容 |
+| M8 | 功能补全 | Docker + MCP + Playwright 兼容 |
