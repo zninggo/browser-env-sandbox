@@ -1,5 +1,7 @@
 # 开发路线图
 
+> 最后核查: 2026-08-27 (按代码实际状态回填勾选)
+
 ## Phase 0: 架构确立 ✅ (2026-08-27)
 - [x] 确定技术栈: Go + v8go
 - [x] 设计约束整理到 design-constraints.md
@@ -8,37 +10,37 @@
 - [x] go.mod 创建
 - [x] git commit
 
-## Phase 1: 指纹引擎 (fpengine)
+## Phase 1: 指纹引擎 (fpengine) ✅
 > 最核心也最难，决定项目上限
 
-- [ ] 指纹知识库（Chrome × Windows × 常见 GPU）
-- [ ] 指纹生成器 (种子 → 自洽指纹)
-- [ ] navigator 属性合成
-- [ ] screen 属性合成
-- [ ] canvas 指纹合成
-- [ ] WebGL 指纹合成
-- [ ] AudioContext 指纹合成
-- [ ] 字体集合成
-- [ ] 时区 + 语言合成
-- [ ] 自洽性校验器
-- [ ] **验证：生成的指纹通过 CreepJS / BrowserLeaks 检测**
+- [x] 指纹知识库（Chrome × Windows × 常见 GPU）
+- [x] 指纹生成器 (种子 → 自洽指纹)
+- [x] navigator 属性合成
+- [x] screen 属性合成
+- [x] canvas 指纹合成
+- [x] WebGL 指纹合成
+- [x] AudioContext 指纹合成
+- [x] 字体集合成
+- [x] 时区 + 语言合成
+- [x] 自洽性校验器
+- [x] **验证：生成的指纹通过 CreepJS / BrowserLeaks 检测**
 
-里程碑 M1: 指纹引擎可用 — 生成的指纹自洽且通过检测
+里程碑 M1: 指纹引擎可用 — 生成的指纹自洽且通过检测 ✅
 
-## Phase 2: V8 沙箱引擎 (sandbox)
-- [ ] v8go 基础封装 (Isolate + Context)
-- [ ] Isolate 池化
-- [ ] 指纹灌入 (Go → V8 Object)
-- [ ] 浏览器 API mock (navigator/screen/document/window)
-- [ ] DOM 最小子集 (createElement/getElementById/cookie)
-- [ ] location 可配置
-- [ ] Storage mock (localStorage/sessionStorage)
-- [ ] 定时器 (setTimeout/setInterval/requestAnimationFrame)
-- [ ] console mock
-- [ ] 事件循环模拟 + flushTimers
-- [ ] **验证：沙箱内执行基本浏览器检测 JS 无报错**
+## Phase 2: V8 沙箱引擎 (sandbox) ✅
+- [x] v8go 基础封装 (Isolate + Context)
+- [x] Isolate 池化
+- [x] 指纹灌入 (Go → V8 Object)
+- [x] 浏览器 API mock (navigator/screen/document/window)
+- [x] DOM 最小子集 (createElement/getElementById/cookie)
+- [x] location 可配置
+- [x] Storage mock (localStorage/sessionStorage)
+- [x] 定时器 (setTimeout/setInterval/requestAnimationFrame)
+- [x] console mock
+- [x] 事件循环模拟 + flushTimers
+- [x] **验证：沙箱内执行基本浏览器检测 JS 无报错**
 
-里程碑 M2: 沙箱可用 — 基本浏览器环境检查通过
+里程碑 M2: 沙箱可用 — 基本浏览器环境检查通过 (133/133 ✅)
 
 ## Phase 3: WAF 验证场景
 - [ ] 获取目标 WAF 挑战 JS
@@ -49,29 +51,29 @@
 
 里程碑 M3: WAF 签名一致 — 第一个实战验证
 
-## Phase 4: 网络层 (netlayer)
-- [ ] XHR/fetch 拦截 (Go 侧)
-- [ ] 离线 replay 引擎
-- [ ] 在线转发 (curl-impersonate 集成)
-- [ ] Cookie jar (与 document.cookie 联动)
-- [ ] TLS 指纹配置 (与 UA 版本一致)
-- [ ] 代理管理 (per-session)
-- [ ] 请求录制
-- [ ] **验证：沙箱内 XHR → replay 响应 → 签名计算完整链路**
+## Phase 4: 网络层 (netlayer) ✅
+- [x] XHR/fetch 拦截 (Go 侧)
+- [x] 离线 replay 引擎
+- [x] 在线转发 (curl-impersonate 集成)
+- [x] Cookie jar (与 document.cookie 联动)
+- [x] TLS 指纹配置 (与 UA 版本一致)
+- [x] 代理管理 (per-session)
+- [x] 请求录制
+- [x] **验证：沙箱内 XHR → replay 响应 → 签名计算完整链路**
 
-里程碑 M4: 网络层可用 — 离线 replay + 在线转发双模式
+里程碑 M4: 网络层可用 — 离线 replay + 在线转发双模式 ✅
 
 ## Phase 5: 调试层 (debug)
-- [ ] CDP WebSocket 服务器
-- [ ] Runtime 域 (evaluate, callFunctionOn)
-- [ ] Network 域 (请求采集, 与 netlayer 联动)
+- [x] CDP WebSocket 服务器
+- [x] Runtime 域 (evaluate, callFunctionOn)
+- [x] Network 域 (请求采集, 与 netlayer 联动)
 - [ ] Debugger 域 (断点, 步进)
-- [ ] Console 域 (消息转发)
-- [ ] **验证: chrome://inspect 连接沙箱, DevTools 可用**
+- [x] Console 域 (消息转发)
+- [x] **验证: chrome://inspect 连接沙箱, DevTools 可用**
 
-里程碑 M5: 调试层可用 — 真 Chrome DevTools 可调试沙箱
+里程碑 M5: 调试层可用 — 真 Chrome DevTools 可调试沙箱 (⚠️ Debugger 域断点/步进未实现)
 
-## Phase 6: 桥接层 (bridge) + SDK
+## Phase 6: 桥接层 (bridge) + SDK ✅
 - [x] JSON-over-HTTP API (Go 1.22 ServeMux)
 - [x] 会话管理 (多 session 并发)
 - [x] Python SDK
@@ -80,18 +82,18 @@
 - [x] CLI (bes)
 - [x] **验证: Python SDK 调用沙箱执行 JS**
 
-里程碑 M6: 桥接层可用 — 多语言 SDK 可用
+里程碑 M6: 桥接层可用 — 多语言 SDK 可用 ✅
 
 ## Phase 7: Session-Unique + 通用化
-- [ ] Session-unique 完整实现 (TLS+cookie+proxy+指纹)
-- [ ] 多 session 并发隔离验证
+- [x] Session-unique 完整实现 (TLS+cookie+proxy+指纹)
+- [x] 多 session 并发隔离验证
 - [ ] 快照/指纹热切换
-- [ ] 设备类型 (PC/Mobile)
+- [x] 设备类型 (PC/Mobile)
 - [ ] 其他目标 SDK 验证 (其他 WAF)
 - [ ] 性能基准 (Isolate 池化 vs 新建)
 - [ ] 文档完善
 
-里程碑 M7: 通用平台 — 多账号反检测可用
+里程碑 M7: 通用平台 — 多账号反检测可用 (⚠️ 热切换/性能基准/文档未完成)
 
 ## Phase 8: 功能补全 (2026-08-27 调研后)
 
@@ -121,11 +123,11 @@
 
 | 里程碑 | 内容 | 产出 |
 |-------|------|------|
-| M1 | 指纹引擎 | 自洽指纹通过检测 |
+| M1 | 指纹引擎 | 自洽指纹通过检测 ✅ |
 | M2 | V8 沙箱 | 浏览器环境检查通过 (133/133 ✅) |
 | M3 | WAF 验证 | 目标 WAF 签名一致 |
 | M4 | 网络层 | replay + 转发双模式 ✅ |
-| M5 | 调试层 | DevTools 可调试 |
+| M5 | 调试层 | DevTools 可调试 (⚠️ Debugger 域未完成) |
 | M6 | 桥接层 | 多语言 SDK ✅ |
-| M7 | 通用化 | 多账号反检测 |
-| M8 | 功能补全 | Docker + MCP + Playwright 兼容 |
+| M7 | 通用化 | 多账号反检测 (⚠️ 部分完成) |
+| M8 | 功能补全 | Docker + MCP + Playwright 兼容 (⚠️ 部分完成) |
