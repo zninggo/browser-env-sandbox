@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	v8 "rogchap.com/v8go"
+	"rogchap.com/v8go"
 
 	"github.com/xiaoxun/bes/pkg/api"
 )

@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"strings"
 
-	v8 "rogchap.com/v8go"
+	"rogchap.com/v8go"
 
 	"github.com/xiaoxun/bes/pkg/api"
 )
@@ -42,9 +42,12 @@ func (b *EnvBuilder) Build() {
 func (b *EnvBuilder) injectNavigator() {
 	nav := v8go.NewObjectTemplate(b.iso)
 	for key, val := range b.fp.Navigator {
+		if key == "webdriver" || key == "toString" {
+			continue // set explicitly below
+		}
 		b.setTemplateValue(nav, key, val)
 	}
-	// Constraint: webdriver MUST be false
+	// Constraint: webdriver MUST be false (ReadOnly)
 	nav.Set("webdriver", false, v8go.ReadOnly)
 	// Constraint: navigator toString
 	nav.Set("toString", v8go.NewFunctionTemplate(b.iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
@@ -233,7 +236,7 @@ func (b *EnvBuilder) injectTimers() {
 	b.global.Set("setTimeout", v8go.NewFunctionTemplate(b.iso, b.timerMgr.SetTimeoutCallback(b.iso)))
 	b.global.Set("clearTimeout", v8go.NewFunctionTemplate(b.iso, b.timerMgr.ClearTimeoutCallback(b.iso)))
 	b.global.Set("setInterval", v8go.NewFunctionTemplate(b.iso, b.timerMgr.SetIntervalCallback(b.iso)))
-	b.global.Set("clearInterval", v8go.NewFunctionTemplate(b.iso, b.timerMgr.ClearIntervalCallback(b.iso)))
+	b.global.Set("clearInterval", v8go.NewFunctionTemplate(b.iso, b.timerMgr.ClearTimeoutCallback(b.iso)))
 	b.global.Set("requestAnimationFrame", v8go.NewFunctionTemplate(b.iso, b.timerMgr.RAFCallback(b.iso)))
 	b.global.Set("cancelAnimationFrame", v8go.NewFunctionTemplate(b.iso, b.timerMgr.ClearTimeoutCallback(b.iso)))
 	b.global.Set("queueMicrotask", v8go.NewFunctionTemplate(b.iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
@@ -447,11 +450,11 @@ func (b *EnvBuilder) setTemplateValue(tmpl *v8go.ObjectTemplate, key string, val
 	case bool:
 		tmpl.Set(key, v)
 	case nil:
-		tmpl.Set(key, v8go.Null(b.iso))
+		// skip nil values — they'll be undefined naturally
 	default:
-		// For complex types (maps, slices), serialize to JSON and parse in JS
-		// This is a simplification; Phase 2 will handle nested objects properly
-		tmpl.Set(key, fmt.Sprintf("%v", v))
+		// For complex types (maps, slices), skip on template;
+		// will be injected via JS post-context
+		_ = v
 	}
 }
 
