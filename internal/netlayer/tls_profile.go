@@ -20,9 +20,9 @@ type TLSProfile struct {
 // These match the curl_cffi impersonate targets.
 func DefaultTLSProfiles() map[string]*TLSProfile {
 	return map[string]*TLSProfile{
-		"chrome155": {
+		"chrome152": {
 			Browser:     "chrome",
-			Version:     "155",
+			Version:     "152",
 			Impersonate: "chrome150", // curl_cffi max is 150, use closest
 			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
 			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
