@@ -443,6 +443,13 @@ func (p *PostContextBuilder) Build() {
 
 	// Inject fetch + XMLHttpRequest
 	p.injectFetchXHR()
+
+	// Inject comprehensive env shim (missing browser APIs)
+	// This is the big one — adds ~30 missing APIs via JS
+	if _, err := p.ctx.RunScript(envShimJS(), "env-shim.js"); err != nil {
+		// Log but don't fail — some APIs might conflict with existing ones
+		fmt.Printf("[sandbox] env shim warning: %v\n", err)
+	}
 }
 
 // --- helpers ---
