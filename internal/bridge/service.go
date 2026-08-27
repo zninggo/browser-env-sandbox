@@ -307,6 +307,15 @@ func (s *Service) SubscribeNetwork(id string) (<-chan NetworkEvent, func(), erro
 
 // PublishNetworkEvent injects a network event into a session's stream. This is
 // the hook the Phase 4 netlayer will call when fetch/XHR are wired to Go.
+
+//  generates signatures for the given URL path using the session's
+// preloaded SDK. Requires SDK scripts to be loaded via preload beforehand.
+func trimQuotes(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
 func (s *Service) PublishNetworkEvent(id string, evt NetworkEvent) {
 	e, ok := s.getEntry(id)
 	if !ok {

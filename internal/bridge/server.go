@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/zninggo/bes/pkg/api"
@@ -18,10 +19,11 @@ import (
 // Endpoints:
 //
 //	GET    /api/session                       list sessions
-//	POST   /api/session                       create session
+	//	POST   /api/session                       create session (supports preload + init)
 //	POST   /api/session/{id}/eval             evaluate JS
 //	POST   /api/session/{id}/script           load & run a named script
 //	POST   /api/session/{id}/call             call a global function
+//	GET    /api/session/{id}/=...     generate signatures via preloaded SDK
 //	GET    /api/session/{id}/fingerprint      get full fingerprint
 //	GET    /api/session/{id}/cookies          get cookie jar
 //	POST   /api/session/{id}/cookies          set a cookie
@@ -84,6 +86,8 @@ type createSessionRequest struct {
 	Proxy     string            `json:"proxy,omitempty"`
 	NetMode   string            `json:"net_mode,omitempty"`
 	Recording string            `json:"recording,omitempty"`
+	Preload   []string          `json:"preload,omitempty"` // script file paths to load on session creation
+	Init      string            `json:"init,omitempty"`    // JS code to execute after preload
 }
 
 type createSessionResponse struct {
@@ -208,6 +212,26 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Preload scripts and run init code if specified
+	if len(req.Preload) > 0 {
+		for _, scriptPath := range req.Preload {
+			content, err := os.ReadFile(scriptPath)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "preload read "+scriptPath+": "+err.Error())
+				return
+			}
+			if err := s.svc.LoadScript(id, scriptPath, string(content)); err != nil {
+				writeError(w, http.StatusInternalServerError, "preload "+scriptPath+": "+err.Error())
+				return
+			}
+		}
+	}
+	if req.Init != "" {
+		if _, err := s.svc.Eval(id, req.Init); err != nil {
+			writeError(w, http.StatusInternalServerError, "init: "+err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusCreated, createSessionResponse{SessionID: id, Fingerprint: fp})
 }
 
@@ -296,6 +320,23 @@ func (s *Server) closeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "closed"})
+}
+
+//  generates signatures for the given URL path via the session's
+// preloaded SDK. GET /api/session/{id}/=/path/to/api
+func (s *Server) (w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	urlPath := r.URL.Query().Get("url")
+	if urlPath == "" {
+		writeError(w, http.StatusBadRequest, "missing url parameter")
+		return
+	}
+	result, err := s.svc.(id, urlPath)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // streamConsole opens an SSE stream of console messages for a session.
