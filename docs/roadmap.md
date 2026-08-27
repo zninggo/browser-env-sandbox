@@ -95,14 +95,41 @@
 
 里程碑 M7: 通用平台 — 多账号反检测可用
 
+## Phase 8: 竞品对比补全 (2026-08-27 调研后)
+
+详见 [docs/competitor-analysis.md](competitor-analysis.md)
+
+### P0 — 竞品普遍有而我们没有
+- [ ] Dockerfile + docker-compose 部署
+- [ ] MCP (Model Context Protocol) server 适配
+- [ ] 原生 Go TLS 指纹（不依赖 curl-impersonate 二进制）
+- [ ] HTTP/3 (QUIC) 支持
+- [ ] Playwright/Puppeteer 兼容层
+
+### P1 — 竞品常见但我们没有
+- [ ] WebGPU 指纹
+- [ ] Client Hints 完整 (Sec-CH-UA-Full-Version-List)
+- [ ] 行为生物特征模拟 (鼠标轨迹/键盘节奏)
+- [ ] Profile 持久化 + 导入/导出/分享
+- [ ] 完整 CSS 选择器引擎
+- [ ] HTML 解析器 (DOMParser 返回真 DOM 树)
+- [ ] GUI/Dashboard (Web 管理界面)
+- [ ] 代理健康检查 + 自动切换
+
+### P2 — 优化
+- [ ] 升级 V8 版本 (v8go V8 9.0 → deno_core 或新版 v8go)
+- [ ] 性能基准 (对照 techinz/browsers-benchmark)
+- [ ] 验证码识别集成
+
 ## 里程碑总览
 
 | 里程碑 | 内容 | 产出 |
 |-------|------|------|
 | M1 | 指纹引擎 | 自洽指纹通过检测 |
-| M2 | V8 沙箱 | 浏览器环境检查通过 |
+| M2 | V8 沙箱 | 浏览器环境检查通过 (133/133 ✅) |
 | M3 | sso 验证 | 
-| M4 | 网络层 | replay + 转发双模式 |
+| M4 | 网络层 | replay + 转发双模式 ✅ |
 | M5 | 调试层 | DevTools 可调试 |
-| M6 | 桥接层 | 多语言 SDK |
+| M6 | 桥接层 | 多语言 SDK ✅ |
 | M7 | 通用化 | 多账号反检测 |
+| M8 | 竞品补全 | Docker + MCP + Playwright 兼容 |
