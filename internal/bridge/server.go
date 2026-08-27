@@ -23,7 +23,6 @@ import (
 //	POST   /api/session/{id}/eval             evaluate JS
 //	POST   /api/session/{id}/script           load & run a named script
 //	POST   /api/session/{id}/call             call a global function
-//	GET    /api/session/{id}/=...     generate signatures via preloaded SDK
 //	GET    /api/session/{id}/fingerprint      get full fingerprint
 //	GET    /api/session/{id}/cookies          get cookie jar
 //	POST   /api/session/{id}/cookies          set a cookie
@@ -320,23 +319,6 @@ func (s *Server) closeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "closed"})
-}
-
-//  generates signatures for the given URL path via the session's
-// preloaded SDK. GET /api/session/{id}/=/path/to/api
-func (s *Server) (w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	urlPath := r.URL.Query().Get("url")
-	if urlPath == "" {
-		writeError(w, http.StatusBadRequest, "missing url parameter")
-		return
-	}
-	result, err := s.svc.(id, urlPath)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
 }
 
 // streamConsole opens an SSE stream of console messages for a session.
