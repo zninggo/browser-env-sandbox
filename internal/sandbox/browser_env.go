@@ -425,12 +425,8 @@ func (p *PostContextBuilder) Build() {
 	// but explicitly set to undefined for safety
 	p.global.Set("Buffer", v8go.Undefined(p.iso))
 	p.global.Set("process", v8go.Undefined(p.iso))
-	p.global.Set("require", v8go.Undefined(p.iso))
-	p.global.Set("global", v8go.Undefined(p.iso))
-	p.global.Set("module", v8go.Undefined(p.iso))
-	p.global.Set("exports", v8go.Undefined(p.iso))
-	p.global.Set("__dirname", v8go.Undefined(p.iso))
-	p.global.Set("__filename", v8go.Undefined(p.iso))
+	// Node.js traces: deleted in env_shim_part3.js (they must not appear as
+	// own properties on window — real browsers don't have them at all).
 
 	// document.cookie accessor: override the template placeholder
 	// with a proper get/set via JS shim

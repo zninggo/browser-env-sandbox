@@ -373,4 +373,14 @@
     Object.defineProperty(window.MimeTypeArray.prototype, Symbol.toStringTag, { value: 'MimeTypeArray' });
   }
 
+  // ── Remove Node.js traces from global object ──
+  // These were set to undefined via v8go, but they still appear as own properties.
+  // In a real browser they don't exist at all, so delete them.
+  delete window.require;
+  delete window.global;
+  delete window.module;
+  delete window.exports;
+  delete window.__dirname;
+  delete window.__filename;
+
 })();
