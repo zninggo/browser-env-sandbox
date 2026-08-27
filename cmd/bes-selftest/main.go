@@ -28,7 +28,7 @@ func main() {
 	sess, err := eng.CreateSession(api.SessionOptions{
 		Browser:  "chrome",
 		OS:       "windows",
-		Location: "https://www.
+		Location: "https://example.com/login",
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create session: %v\n", err)
@@ -74,7 +74,7 @@ func main() {
 		{"window === parent", `window === parent`, "true"},
 		{"window === frames", `window === frames`, "true"},
 		// ── Document ──
-		{"document.URL matches location", `document.URL`, "https://www.
+		{"document.URL matches location", `document.URL`, "https://example.com/login"},
 		{"document.readyState = complete", `document.readyState`, "complete"},
 		{"document.visibilityState = visible", `document.visibilityState`, "visible"},
 		{"typeof document.cookie = string", `typeof document.cookie`, "string"},
@@ -104,9 +104,9 @@ func main() {
 		{"typeof localStorage = object", `typeof localStorage`, "object"},
 		{"typeof sessionStorage = object", `typeof sessionStorage`, "object"},
 		// ── Location ──
-		{"location.href matches", `location.href`, "https://www.
+		{"location.href matches", `location.href`, "https://example.com/login"},
 		{"location.protocol = https:", `location.protocol`, "https:"},
-		{"location.hostname = www.
+		{"location.hostname = example.com", `location.hostname`, "example.com"},
 		// ── History ──
 		{"typeof history = object", `typeof history`, "object"},
 		{"history.length = 1", `String(history.length)`, "1"},
