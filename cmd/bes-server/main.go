@@ -25,7 +25,13 @@ func main() {
 	addr := flag.String("addr", "0.0.0.0", "bind address")
 	port := flag.Int("port", 8080, "HTTP API server port")
 	poolSize := flag.Int("pool", 8, "V8 isolate pool size")
+	authToken := flag.String("auth-token", "", "API auth token (empty = no auth); overridden by BES_AUTH_TOKEN env")
 	flag.Parse()
+
+	// BES_AUTH_TOKEN env overrides flag (same pattern as other BES_* vars).
+	if envToken := os.Getenv("BES_AUTH_TOKEN"); envToken != "" {
+		*authToken = envToken
+	}
 
 	// Wire the stack: fingerprint engine -> sandbox engine -> bridge service.
 	fpEng := fpengine.New()
@@ -33,10 +39,15 @@ func main() {
 	svc := bridge.NewService(engine)
 
 	listenAddr := fmt.Sprintf("%s:%d", *addr, *port)
-	srv := bridge.NewServer(listenAddr, svc)
+	srv := bridge.NewServer(listenAddr, svc, *authToken)
 
 	go func() {
 		log.Printf("[bes-server] HTTP API listening on http://%s", listenAddr)
+		if *authToken != "" {
+			log.Printf("[bes-server] auth required: Authorization: Bearer <token>")
+		} else {
+			log.Printf("[bes-server] WARNING: no auth token set, API is open")
+		}
 		log.Printf("[bes-server] endpoints under /api/session (see internal/bridge/server.go)")
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("[bes-server] listen error: %v", err)

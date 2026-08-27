@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/zninggo/bes/pkg/api"
@@ -18,40 +19,43 @@ import (
 // Endpoints:
 //
 //	GET    /api/session                       list sessions
-//	POST   /api/session                       create session
+//	POST   /api/session                       create session (supports 
 //	POST   /api/session/{id}/eval             evaluate JS
 //	POST   /api/session/{id}/script           load & run a named script
 //	POST   /api/session/{id}/call             call a global function
+//	GET    /api/session/{id}/=...     generate 
 //	GET    /api/session/{id}/fingerprint      get full fingerprint
 //	GET    /api/session/{id}/cookies          get cookie jar
 //	POST   /api/session/{id}/cookies          set a cookie
 //	DELETE /api/session/{id}                  close session
 //	GET    /api/session/{id}/stream/console   SSE stream of console messages
 //	GET    /api/session/{id}/stream/network   SSE stream of network events
-//	GET    /health                            liveness probe
+//	GET    /health                            liveness probe (no auth)
 type Server struct {
-	svc    *Service
-	server *http.Server
+	svc      *Service
+	server   *http.Server
+	authToken string // empty = no auth
 }
 
 // NewServer builds a Server bound to addr and wires all routes onto a
 // Go 1.22 ServeMux (method + path-pattern routing, no third-party deps).
-func NewServer(addr string, svc *Service) *Server {
+// authToken: if non-empty, all /api/ endpoints require "Authorization: Bearer <token>".
+func NewServer(addr string, svc *Service, authToken string) *Server {
 	mux := http.NewServeMux()
-	s := &Server{svc: svc}
+	s := &Server{svc: svc, authToken: authToken}
 
 	mux.HandleFunc("GET /health", s.health)
-	mux.HandleFunc("GET /api/session", s.listSessions)
-	mux.HandleFunc("POST /api/session", s.createSession)
-	mux.HandleFunc("POST /api/session/{id}/eval", s.eval)
-	mux.HandleFunc("POST /api/session/{id}/script", s.loadScript)
-	mux.HandleFunc("POST /api/session/{id}/call", s.callFunction)
-	mux.HandleFunc("GET /api/session/{id}/fingerprint", s.fingerprint)
-	mux.HandleFunc("GET /api/session/{id}/cookies", s.getCookies)
-	mux.HandleFunc("POST /api/session/{id}/cookies", s.setCookie)
-	mux.HandleFunc("DELETE /api/session/{id}", s.closeSession)
-	mux.HandleFunc("GET /api/session/{id}/stream/console", s.streamConsole)
-	mux.HandleFunc("GET /api/session/{id}/stream/network", s.streamNetwork)
+	mux.HandleFunc("GET /api/session", s.auth(s.listSessions))
+	mux.HandleFunc("POST /api/session", s.auth(s.createSession))
+	mux.HandleFunc("POST /api/session/{id}/eval", s.auth(s.eval))
+	mux.HandleFunc("POST /api/session/{id}/script", s.auth(s.loadScript))
+	mux.HandleFunc("POST /api/session/{id}/call", s.auth(s.callFunction))
+	mux.HandleFunc("GET /api/session/{id}/fingerprint", s.auth(s.fingerprint))
+	mux.HandleFunc("GET /api/session/{id}/cookies", s.auth(s.getCookies))
+	mux.HandleFunc("POST /api/session/{id}/cookies", s.auth(s.setCookie))
+	mux.HandleFunc("DELETE /api/session/{id}", s.auth(s.closeSession))
+	mux.HandleFunc("GET /api/session/{id}/stream/console", s.auth(s.streamConsole))
+	mux.HandleFunc("GET /api/session/{id}/stream/network", s.auth(s.streamNetwork))
 
 	s.server = &http.Server{
 		Addr:              addr,
@@ -82,6 +86,8 @@ type createSessionRequest struct {
 	Proxy     string            `json:"proxy,omitempty"`
 	NetMode   string            `json:"net_mode,omitempty"`
 	Recording string            `json:"recording,omitempty"`
+	
+	Init      string            `json:"init,omitempty"`    // JS code to execute after 
 }
 
 type createSessionResponse struct {
@@ -158,6 +164,23 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, name, data string) {
 	flusher.Flush()
 }
 
+// ---------- auth middleware ----------
+
+func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken == "" {
+			next(w, r)
+			return
+		}
+		token := r.Header.Get("Authorization")
+		if token == "Bearer "+s.authToken {
+			next(w, r)
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+	}
+}
+
 // ---------- handlers ----------
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -188,6 +211,26 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// 
+	if len(req.
+		for _, scriptPath := range req.
+			content, err := os.ReadFile(scriptPath)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "
+				return
+			}
+			if err := s.svc.LoadScript(id, scriptPath, string(content)); err != nil {
+				writeError(w, http.StatusInternalServerError, "
+				return
+			}
+		}
+	}
+	if req.Init != "" {
+		if _, err := s.svc.Eval(id, req.Init); err != nil {
+			writeError(w, http.StatusInternalServerError, "init: "+err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, createSessionResponse{SessionID: id, Fingerprint: fp})
 }
@@ -277,6 +320,23 @@ func (s *Server) closeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "closed"})
+}
+
+// 
+// GET /api/session/{id}//path/to/api?_id=xxx
+func (s *Server) 
+	id := r.PathValue("id")
+	urlPath := r.URL.Query().Get("url")
+	if urlPath == "" {
+		writeError(w, http.StatusBadRequest, "missing url parameter")
+		return
+	}
+	result, err := s.svc.
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // streamConsole opens an SSE stream of console messages for a session.
