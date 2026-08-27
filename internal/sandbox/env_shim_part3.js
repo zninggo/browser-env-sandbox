@@ -289,4 +289,55 @@
   // ── document.hasChildNodes ──
   document.hasChildNodes = function() { return true; };
 
+  // ── Request / Response / Headers constructors (fetch API) ──
+  if (typeof Request === 'undefined') {
+    window.Request = function(input, init) {
+      init = init || {};
+      this.url = typeof input === 'string' ? input : (input && input.url) || '';
+      this.method = init.method || (typeof input === 'object' && input.method) || 'GET';
+      this.headers = new Headers(init.headers || {});
+      this.body = init.body || null;
+      this.mode = init.mode || 'cors';
+      this.credentials = init.credentials || 'same-origin';
+      this.cache = init.cache || 'default';
+      this.redirect = init.redirect || 'follow';
+      this.referrer = init.referrer || 'about:client';
+      this.integrity = init.integrity || '';
+      this.signal = init.signal || null;
+      this[Symbol.toStringTag] = 'Request';
+    };
+  }
+  if (typeof Headers === 'undefined') {
+    window.Headers = function(init) {
+      var store = {};
+      if (init) {
+        if (typeof init.forEach === 'function') {
+          init.forEach(function(v, k) { store[k.toLowerCase()] = v; });
+        } else if (typeof init === 'object') {
+          for (var k in init) { store[k.toLowerCase()] = String(init[k]); }
+        }
+      }
+      this.get = function(name) { return store[name.toLowerCase()] || null; };
+      this.set = function(name, value) { store[name.toLowerCase()] = String(value); };
+      this.has = function(name) { return name.toLowerCase() in store; };
+      this.delete = function(name) { delete store[name.toLowerCase()]; };
+      this.forEach = function(cb, thisArg) { for (var k in store) cb.call(thisArg, store[k], k, this); };
+      this[Symbol.toStringTag] = 'Headers';
+    };
+  }
+  if (typeof Response === 'undefined') {
+    window.Response = function(body, init) {
+      init = init || {};
+      this.body = body || null;
+      this.status = init.status || 200;
+      this.statusText = init.statusText || 'OK';
+      this.headers = new Headers(init.headers || {});
+      this.ok = this.status >= 200 && this.status < 300;
+      this.type = 'default';
+      this.url = init.url || '';
+      this.redirected = false;
+      this[Symbol.toStringTag] = 'Response';
+    };
+  }
+
 })();
