@@ -1,6 +1,8 @@
 package fpengine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/zninggo/bes/pkg/api"
@@ -196,17 +198,12 @@ func DefaultKnowledgeBase() *KnowledgeBase {
 			{Name: "Asia/Seoul", Languages: []string{"ko-KR", "ko", "en"}},
 			{Name: "Asia/Singapore", Languages: []string{"en-SG", "en", "zh-SG", "zh"}},
 		},
-		// Canvas/Audio hashes need to be pre-collected from real machines.
-		// Placeholder values — Phase 1 will fill these in.
-		CanvasHashes: map[string]string{
-			"chrome131_windows_nvidia": "TODO_precollect",
-			"chrome131_windows_intel":  "TODO_precollect",
-			"chrome131_macos_apple":    "TODO_precollect",
-		},
-		AudioHashes: map[string]string{
-			"chrome131_windows": "TODO_precollect",
-			"chrome131_macos":   "TODO_precollect",
-		},
+		// Canvas/Audio hashes: real values need pre-collection from real machines
+		// (see experiments/collect-hashes.js). Until then, LookupCanvasHash /
+		// LookupAudioHash generate deterministic synthetic hashes so the
+		// fingerprint is never left with a placeholder.
+		CanvasHashes: map[string]string{},
+		AudioHashes:   map[string]string{},
 		WindowProps: map[string][]api.WindowProps{
 			"windows": {
 				{InnerWidth: 1920, InnerHeight: 969, OuterWidth: 1920, OuterHeight: 1040, DevicePixelRatio: 1, ScreenX: 0, ScreenY: 0},
@@ -306,7 +303,7 @@ func (kb *KnowledgeBase) LookupCanvasHash(majorVer int, osName, gpuVendor string
 	key := canvasHashKey(majorVer, osName, gpuVendor)
 	hash := kb.CanvasHashes[key]
 	if hash == "" {
-		hash = "TODO_precollect"
+		hash = syntheticHash("canvas", majorVer, osName, gpuVendor)
 	}
 	return api.CanvasFP{
 		ToDataURLHash: hash,
@@ -320,9 +317,20 @@ func (kb *KnowledgeBase) LookupAudioHash(majorVer int, osName string) api.AudioF
 	key := audioHashKey(majorVer, osName)
 	hash := kb.AudioHashes[key]
 	if hash == "" {
-		hash = "TODO_precollect"
+		hash = syntheticHash("audio", majorVer, osName, "")
 	}
 	return api.AudioFP{Hash: hash}
+}
+
+// syntheticHash generates a deterministic hash from the given components.
+// This is NOT a real machine hash — it ensures the fingerprint has a
+// consistent, non-placeholder value until real hashes are collected.
+// Replace CanvasHashes/AudioHashes entries with real values from
+// experiments/collect-hashes.js to use actual machine fingerprints.
+func syntheticHash(prefix string, majorVer int, osName, gpuVendor string) string {
+	data := fmt.Sprintf("%s:%d:%s:%s", prefix, majorVer, osName, gpuVendor)
+	h := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(h[:8]) // 16 hex chars
 }
 
 func (kb *KnowledgeBase) SampleWindowProps(rng *seededRNG, screen map[string]any) api.WindowProps {

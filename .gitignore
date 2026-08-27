@@ -4,6 +4,7 @@ node_modules/
 # Go build artifacts
 /bes
 /bes-server
+/bes-selftest
 *.exe
 /vendor/
 

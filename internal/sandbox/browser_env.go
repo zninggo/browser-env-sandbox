@@ -372,7 +372,7 @@ func (b *EnvBuilder) createElementCallback(info *v8go.FunctionCallbackInfo) *v8g
 			}
 			ctxObj := v8go.NewObjectTemplate(b.iso)
 			if ctxType == "2d" {
-				injectCanvas2D(ctxObj, b.iso)
+				injectCanvas2D(ctxObj, b.iso, b.fp)
 			} else if strings.HasPrefix(ctxType, "webgl") {
 				injectWebGL(ctxObj, b.iso, b.fp)
 			}
@@ -380,7 +380,10 @@ func (b *EnvBuilder) createElementCallback(info *v8go.FunctionCallbackInfo) *v8g
 			return inst.Value
 		}))
 		obj.Set("toDataURL", v8go.NewFunctionTemplate(b.iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
-			v, _ := v8go.NewValue(b.iso, "data:image/png;base64,")
+			// Deterministic dataURL based on the fingerprint's canvas hash.
+			// This keeps toDataURL output consistent with fp.Canvas.ToDataURLHash.
+			dataURL := "data:image/png;base64," + b.fp.Canvas.ToDataURLHash
+			v, _ := v8go.NewValue(b.iso, dataURL)
 			return v
 		}))
 	}
@@ -491,7 +494,7 @@ func noopCallbackReturningObj(info *v8go.FunctionCallbackInfo) *v8go.Value {
 	return inst.Value
 }
 
-func injectCanvas2D(ctx *v8go.ObjectTemplate, iso *v8go.Isolate) {
+func injectCanvas2D(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerprint) {
 	ctx.Set("fillStyle", "#000000")
 	ctx.Set("strokeStyle", "#000000")
 	ctx.Set("lineWidth", float64(1))
@@ -514,7 +517,16 @@ func injectCanvas2D(ctx *v8go.ObjectTemplate, iso *v8go.Isolate) {
 		if len(info.Args()) > 0 {
 			text = info.Args()[0].String()
 		}
-		v, _ := v8go.NewValue(iso, fmt.Sprintf(`{"width":%d}`, len(text)*6))
+		// Use fingerprint's measureText data if available, otherwise fallback
+		// to a deterministic width based on text length.
+		width := float64(len(text) * 6)
+		if fp != nil && fp.Canvas.MeasureText != nil {
+			if w, ok := fp.Canvas.MeasureText["measureText_width"]; ok {
+				// Scale by text length relative to a baseline of 10 chars
+				width = w * float64(len(text)) / 10.0
+			}
+		}
+		v, _ := v8go.NewValue(iso, fmt.Sprintf(`{"width":%g}`, width))
 		return v
 	}))
 }
