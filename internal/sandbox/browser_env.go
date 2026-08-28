@@ -450,10 +450,14 @@ func (p *PostContextBuilder) Build() {
 	p.injectFetchXHR()
 
 	// Inject comprehensive env shim (missing browser APIs)
-	// This is the big one — adds ~30 missing APIs via JS
-	if _, err := p.ctx.RunScript(envShimJS(), "env-shim.js"); err != nil {
-		// Log but don't fail — some APIs might conflict with existing ones
-		fmt.Printf("[sandbox] env shim warning: %v\n", err)
+	// Each part runs independently so a parse error in one part doesn't
+	// block the others — all 5 parts are self-contained IIFEs.
+	parts := envShimParts()
+	for i, part := range parts {
+		name := fmt.Sprintf("env-shim-part%d.js", i+1)
+		if _, err := p.ctx.RunScript(part, name); err != nil {
+			fmt.Printf("[sandbox] env shim %s warning: %v\n", name, err)
+		}
 	}
 }
 

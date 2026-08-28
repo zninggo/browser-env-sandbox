@@ -661,7 +661,7 @@
   if (typeof NavigationDestination === 'undefined') { window.NavigationDestination = function() { this[Symbol.toStringTag] = 'NavigationDestination'; }; }
   if (typeof NavigationHistoryEntry === 'undefined') { window.NavigationHistoryEntry = function() { this[Symbol.toStringTag] = 'NavigationHistoryEntry'; }; }
   if (typeof NavigationPrecommitController === 'undefined') { window.NavigationPrecommitController = function() { this[Symbol.toStringTag] = 'NavigationPrecommitController'; }; }
-  if (typeof Navigation
+  if (typeof Navigation === 'undefined') { window.Navigation = function() { this[Symbol.toStringTag] = 'Navigation'; }; }
   if (typeof NavigationTransition === 'undefined') { window.NavigationTransition = function() { this[Symbol.toStringTag] = 'NavigationTransition'; }; }
   if (typeof NavigatorLogin === 'undefined') { window.NavigatorLogin = function() { this[Symbol.toStringTag] = 'NavigatorLogin'; }; }
   if (typeof NavigatorManagedData === 'undefined') { window.NavigatorManagedData = function() { this[Symbol.toStringTag] = 'NavigatorManagedData'; }; }
