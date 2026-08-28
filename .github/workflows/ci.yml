@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: |
+          CGO_ENABLED=1 go build -o bes ./cmd/bes
+          CGO_ENABLED=1 go build -o bes-server ./cmd/bes-server
+          CGO_ENABLED=1 go build -o bes-selftest ./cmd/bes-selftest
+
+      - name: Self-test (133 browser environment checks)
+        run: ./bes-selftest
