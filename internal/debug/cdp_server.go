@@ -21,6 +21,7 @@ type CDPServer struct {
 	sessions SessionProvider
 	mu       sync.Mutex
 	clients  map[string]*CDPClient
+	dbgState *debuggerState
 }
 
 // SessionProvider provides access to sandbox sessions for CDP operations.

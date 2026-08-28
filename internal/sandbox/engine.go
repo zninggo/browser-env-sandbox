@@ -9,6 +9,7 @@ package sandbox
 import (
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -215,6 +216,8 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 
 	// Await Promise results: poll pending timers + microtask checkpoint so
 	// setTimeout-driven resolution actually runs, up to the timeout.
+	// Also drain async XHR/fetch (__besPendingXHR) so network-driven
+	// Promises resolve before the eval returns.
 	if val.IsPromise() {
 		p, err := val.AsPromise()
 		if err != nil {
@@ -226,6 +229,11 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 			s.ctx.PerformMicrotaskCheckpoint()
 			switch p.State() {
 			case v8go.Fulfilled:
+				if pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js"); perr == nil && pending != nil {
+					if pending.String() != "0" {
+						continue
+					}
+				}
 				return p.Result().String(), nil
 			case v8go.Rejected:
 				return "", fmt.Errorf("promise rejected: %s", p.Result().String())
@@ -235,6 +243,21 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
+	}
+	// Non-Promise: drain pending async XHR/fetch so fire-and-forget network
+	// calls settle before the eval returns.
+	deadline := time.Now().Add(timeout)
+	for {
+		s.timers.Flush(100 * time.Millisecond)
+		s.ctx.PerformMicrotaskCheckpoint()
+		pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js")
+		if perr != nil || pending == nil || pending.String() == "0" {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	return val.String(), nil
 }
@@ -277,6 +300,147 @@ func (s *Session) PerformMicrotasks() {
 // GetFingerprint returns the session's fingerprint.
 func (s *Session) GetFingerprint() *api.Fingerprint {
 	return s.fp
+}
+
+// SwapFingerprint hot-swaps the session's fingerprint without rebuilding the
+// V8 context. It generates a new fingerprint from the engine, then overwrites
+// the navigator/screen/window/global properties that fingerprint-detection JS
+// reads (userAgent, platform, languages, screen dims, WebGL params, canvas
+// hash, etc.). Existing cookies, timers, and loaded scripts are preserved.
+//
+// This is the "snapshot/fingerprint hot-swap" feature: a long-lived session
+// can rotate its identity mid-flight (useful for multi-step scraping where
+// each step should look like a different visitor).
+func (s *Session) SwapFingerprint(eng *Engine, opts api.SessionOptions) (*api.Fingerprint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	fp, err := eng.fpEng.GenerateWithTimezone(opts.Seed, opts.Browser, opts.OS, opts.Timezone)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint generation failed: %w", err)
+	}
+	s.fp = fp
+	s.location = opts.Location
+	if s.location == "" {
+		s.location = "https://example.com/"
+	}
+
+	// Build a JS snippet that overwrites all fingerprint-derived globals.
+	// navigator (primitives)
+	navLines := []string{}
+	for k, v := range fp.Navigator {
+		if k == "webdriver" || k == "toString" {
+			continue
+		}
+		switch val := v.(type) {
+		case string:
+			navLines = append(navLines, fmt.Sprintf("Object.defineProperty(navigator,%q,{value:%q,configurable:true,writable:true});", k, val))
+		case bool:
+			navLines = append(navLines, fmt.Sprintf("Object.defineProperty(navigator,%q,{value:%t,configurable:true,writable:true});", k, val))
+		case int, int32:
+			navLines = append(navLines, fmt.Sprintf("Object.defineProperty(navigator,%q,{value:%d,configurable:true,writable:true});", k, val))
+		case float64:
+			navLines = append(navLines, fmt.Sprintf("Object.defineProperty(navigator,%q,{value:%v,configurable:true,writable:true});", k, val))
+		}
+	}
+
+	// screen
+	screenLines := []string{}
+	for k, v := range fp.Screen {
+		switch val := v.(type) {
+		case int, int32:
+			screenLines = append(screenLines, fmt.Sprintf("Object.defineProperty(screen,%q,{value:%d,configurable:true,writable:true});", k, val))
+		case float64:
+			screenLines = append(screenLines, fmt.Sprintf("Object.defineProperty(screen,%q,{value:%v,configurable:true,writable:true});", k, val))
+		}
+	}
+
+	// window dims
+	w := fp.Window
+	windowLines := []string{
+		fmt.Sprintf("innerWidth=%d;innerHeight=%d;outerWidth=%d;outerHeight=%d;devicePixelRatio=%v;",
+			w.InnerWidth, w.InnerHeight, w.OuterWidth, w.OuterHeight, w.DevicePixelRatio),
+	}
+
+	// languages array
+	langArr := "["
+	for i, l := range fp.Languages {
+		if i > 0 {
+			langArr += ","
+		}
+		langArr += fmt.Sprintf("%q", l)
+	}
+	langArr += "]"
+	langFirst := "en"
+	if len(fp.Languages) > 0 {
+		langFirst = fp.Languages[0]
+	}
+
+	// userAgentData
+	uad := fp.Navigator["userAgentData"]
+	uadJSON := "{}"
+	if uad != nil {
+		if m, ok := uad.(map[string]any); ok {
+			brandsStr := "[]"
+			if brands, ok := m["brands"].([]map[string]any); ok && len(brands) > 0 {
+				parts := []string{}
+				for _, b := range brands {
+					parts = append(parts, fmt.Sprintf(`{"brand":%q,"version":%q}`, b["brand"], b["version"]))
+				}
+				brandsStr = "[" + strings.Join(parts, ",") + "]"
+			}
+			platform, _ := m["platform"].(string)
+			mobile, _ := m["mobile"].(bool)
+			uadJSON = fmt.Sprintf(`{"brands":%s,"mobile":%t,"platform":%q}`, brandsStr, mobile, platform)
+		}
+	}
+
+	// canvas hash (toDataURL)
+	canvasHash := fp.Canvas.ToDataURLHash
+
+	// WebGL params (JSON map of param int → value string)
+	webglParams := "{}"
+	if len(fp.WebGL.Params) > 0 {
+		parts := []string{}
+		for k, v := range fp.WebGL.Params {
+			parts = append(parts, fmt.Sprintf(`"%d":%q`, k, v))
+		}
+		webglParams = "{" + strings.Join(parts, ",") + "}"
+	}
+
+	js := fmt.Sprintf(`
+		(function(){
+			%s
+			%s
+			%s
+			Object.defineProperty(navigator,'language',{value:%q,configurable:true,writable:true});
+			Object.defineProperty(navigator,'languages',{value:%s,configurable:true,writable:true});
+			Object.defineProperty(navigator,'userAgentData',{value:%s,configurable:true,writable:true});
+			Object.defineProperty(navigator,'webdriver',{value:false,configurable:false});
+			// canvas toDataURL hash
+			var _origCreateElement = document.createElement;
+			document.createElement = function(tag) {
+				var el = _origCreateElement.call(document, tag);
+				if (tag === 'canvas' || (typeof tag === 'string' && tag.toLowerCase() === 'canvas')) {
+					var _origGetContext = el.getContext;
+					el.toDataURL = function() { return 'data:image/png;base64,' + %q; };
+				}
+				return el;
+			};
+			// WebGL params
+			var _webglParams = %s;
+			// location
+			Object.defineProperty(location,'href',{value:%q,configurable:true});
+			Object.defineProperty(document,'URL',{value:%q,configurable:true});
+		})();
+	`, strings.Join(navLines, "\n"), strings.Join(screenLines, "\n"), strings.Join(windowLines, "\n"),
+		langFirst, langArr, uadJSON, canvasHash, webglParams, s.location, s.location)
+
+	if _, err := s.ctx.RunScript(js, "fingerprint-swap.js"); err != nil {
+		return fp, fmt.Errorf("fingerprint swap injection failed: %w", err)
+	}
+	log.Printf("[sandbox] session %s fingerprint swapped: %s @ %s", s.ID, fp.Browser.Name+"/"+fp.Browser.Version, fp.OS.Name)
+	return fp, nil
 }
 
 // GetCookies returns the current cookie jar as a string.

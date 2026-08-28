@@ -138,15 +138,25 @@
     return [];
   };
 
-  // ── Enhanced DOMParser (returns parseable DOM tree) ──
+  // ── Enhanced DOMParser (returns real DOM tree) ──
+  // A recursive-descent HTML tokenizer that builds a tree of real DOM
+  // elements (created via document.createElement) with parent/child links,
+  // attributes, and text nodes — queryable through the existing CSS selector
+  // engine and getElementsByTagName.
   var origDOMParser = window.DOMParser;
   window.DOMParser = function() {};
   window.DOMParser.prototype.parseFromString = function(str, type) {
-    // Simple HTML parser — extracts tags and text into a DOM-like tree
+    var root = _besParseHTML(str || '');
+    var headEl = null, bodyEl = null;
+    for (var i = 0; i < root.children.length; i++) {
+      var c = root.children[i];
+      if (c.tagName === 'HEAD') headEl = c;
+      else if (c.tagName === 'BODY') bodyEl = c;
+    }
     var doc = {
-      documentElement: _besParseHTML(str),
-      head: { children: [], getElementsByTagName: function() { return []; }, querySelector: function() { return null; } },
-      body: { children: [], getElementsByTagName: function() { return []; }, querySelector: function() { return null; } },
+      documentElement: root,
+      head: headEl || { children: [], getElementsByTagName: function() { return []; }, querySelector: function() { return null; } },
+      body: bodyEl || { children: [], getElementsByTagName: function() { return []; }, querySelector: function() { return null; } },
       getElementById: function(id) { return _besElementRegistry[id] || null; },
       querySelector: function(sel) { return document.querySelector(sel); },
       querySelectorAll: function(sel) { return document.querySelectorAll(sel); },
@@ -158,24 +168,93 @@
     return doc;
   };
 
+  // _besParseHTML: tokenizes HTML into a tree of DOM elements.
+  // Handles: tags (open/close/self-closing), attributes, text nodes, and
+  // void elements (br, img, input, meta, link, hr, etc.).
   function _besParseHTML(html) {
-    // Very simplified HTML parser — just enough to not crash
     var root = document.createElement('html');
-    // Extract <head> and <body> if present
-    var headMatch = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
-    var bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-
-    if (headMatch) {
-      var head = document.createElement('head');
-      head.innerHTML = headMatch[1];
-      _besRegisterElement(head);
-      root.appendChild = head;
-    }
-    if (bodyMatch) {
-      var body = document.createElement('body');
-      body.innerHTML = bodyMatch[1];
-      _besRegisterElement(body);
-      root.appendChild = body;
+    var stack = [root];
+    var voidTags = { BR:1, IMG:1, INPUT:1, META:1, LINK:1, HR:1, AREA:1, BASE:1, COL:1, EMBED:1, PARAM:1, SOURCE:1, TRACK:1, WBR:1 };
+    var i = 0;
+    while (i < html.length) {
+      if (html[i] === '<') {
+        // Comment or doctype?
+        if (html.substr(i, 4) === '<!--') {
+          var endC = html.indexOf('-->', i + 4);
+          i = endC >= 0 ? endC + 4 : html.length;
+          continue;
+        }
+        if (html.substr(i, 2) === '<!') {
+          var endD = html.indexOf('>', i);
+          i = endD >= 0 ? endD + 1 : html.length;
+          continue;
+        }
+        // Closing tag?
+        if (html[i+1] === '/') {
+          var endClose = html.indexOf('>', i);
+          if (endClose < 0) break;
+          var closeTag = html.substring(i + 2, endClose).trim().toUpperCase();
+          // Pop stack until we find the matching open tag
+          for (var k = stack.length - 1; k >= 1; k--) {
+            if (stack[k].tagName === closeTag) {
+              stack.length = k;
+              break;
+            }
+          }
+          i = endClose + 1;
+          continue;
+        }
+        // Opening tag — parse tag name + attributes
+        var endTag = html.indexOf('>', i);
+        if (endTag < 0) break;
+        var tagContent = html.substring(i + 1, endTag);
+        var selfClosing = tagContent.charAt(tagContent.length - 1) === '/';
+        if (selfClosing) tagContent = tagContent.slice(0, -1).trim();
+        // Extract tag name
+        var spIdx = tagContent.search(/\s/);
+        var tagName = (spIdx >= 0 ? tagContent.substring(0, spIdx) : tagContent).toUpperCase();
+        if (!tagName) { i = endTag + 1; continue; }
+        // Create element
+        var el = document.createElement(tagName.toLowerCase());
+        el.tagName = tagName;
+        // Parse attributes: name="value" | name='value' | name
+        var attrStr = spIdx >= 0 ? tagContent.substring(spIdx + 1).trim() : '';
+        var attrRe = /([a-zA-Z_:][a-zA-Z0-9_:.\-]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+        var am;
+        while ((am = attrRe.exec(attrStr)) !== null) {
+          var attrName = am[1];
+          var attrVal = am[2] !== undefined ? am[2] : (am[3] !== undefined ? am[3] : (am[4] !== undefined ? am[4] : ''));
+          try { el.setAttribute(attrName, attrVal); } catch(e) {}
+          if (attrName.toLowerCase() === 'id') {
+            try { el.id = attrVal; } catch(e) {}
+            _besRegisterElement(el);
+          } else if (attrName.toLowerCase() === 'class') {
+            try { el.className = attrVal; } catch(e) {}
+          }
+        }
+        _besRegisterElement(el);
+        // Append to current parent
+        var parent = stack[stack.length - 1];
+        if (parent.children) parent.children.push(el); else parent.children = [el];
+        el.parentNode = parent;
+        el.parentElement = parent;
+        // Push to stack unless void or self-closing
+        if (!selfClosing && !voidTags[tagName]) {
+          stack.push(el);
+        }
+        i = endTag + 1;
+      } else {
+        // Text node
+        var endText = html.indexOf('<', i);
+        if (endText < 0) endText = html.length;
+        var text = html.substring(i, endText);
+        if (text.trim()) {
+          var parent2 = stack[stack.length - 1];
+          var textNode = { nodeType: 3, textContent: text, nodeValue: text, parentNode: parent2 };
+          if (parent2.children) parent2.children.push(textNode); else parent2.children = [textNode];
+        }
+        i = endText;
+      }
     }
     return root;
   }

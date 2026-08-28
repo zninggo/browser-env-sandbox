@@ -21,6 +21,7 @@ COPY . .
 RUN CGO_ENABLED=1 go build -o /bes ./cmd/bes
 RUN CGO_ENABLED=1 go build -o /bes-server ./cmd/bes-server
 RUN CGO_ENABLED=1 go build -o /bes-selftest ./cmd/bes-selftest
+RUN CGO_ENABLED=1 go build -o /bes-bench ./cmd/bes-bench
 
 # ── Runtime stage ──
 FROM debian:trixie-slim
@@ -43,6 +44,7 @@ RUN pip3 install --no-cache-dir curl_cffi --break-system-packages 2>/dev/null ||
 COPY --from=builder /bes /usr/local/bin/bes
 COPY --from=builder /bes-server /usr/local/bin/bes-server
 COPY --from=builder /bes-selftest /usr/local/bin/bes-selftest
+COPY --from=builder /bes-bench /usr/local/bin/bes-bench
 
 # Copy SDK
 COPY sdk/ /opt/bes/sdk/

@@ -281,12 +281,24 @@ func (c *CurlCffiClient) CheckAvailable() bool {
 
 // TLSClient is a unified TLS-fingerprinting HTTP client.
 // Priority: utls (pure Go, most accurate) → curl-impersonate → curl_cffi → standard Go HTTP.
+// QUIC (HTTP/3) is available as an optional transport via the quic field;
+// when EnableQUIC is called, https requests try H3 first and fall back to
+// the utls HTTP/2 path on failure.
 type TLSClient struct {
 	utls        *UTLSClient
 	impersonate *CurlImpersonate
 	cffi        *CurlCffiClient
 	fallback    *http.Client
+	quic        *QUICClient
+	quicEnabled bool
 	target      string
+}
+
+// EnableQUIC turns on HTTP/3 (QUIC) as a preferred transport for https URLs.
+// Non-https and fallback paths are unaffected.
+func (tc *TLSClient) EnableQUIC() {
+	tc.quic = NewQUICClient(tc.target)
+	tc.quicEnabled = true
 }
 
 // NewTLSClient creates a unified TLS client with the given target.
@@ -323,6 +335,14 @@ func NewTLSClient(target string) *TLSClient {
 
 // Request sends an HTTP request using the best available TLS client.
 func (tc *TLSClient) Request(method, url string, headers map[string]string, body []byte) (*Response, error) {
+	// Try QUIC (HTTP/3) first for https URLs when enabled. On failure, fall
+	// through to the TLS-fingerprinted HTTP/2 path.
+	if tc.quicEnabled && tc.quic != nil && strings.HasPrefix(url, "https://") {
+		if resp, err := tc.quic.Request(method, url, headers, body); err == nil {
+			return resp, nil
+		}
+		// QUIC failed — fall through to utls/H2
+	}
 	if tc.utls != nil && tc.utls.CheckAvailable() {
 		return tc.utls.Request(method, url, headers, body)
 	}

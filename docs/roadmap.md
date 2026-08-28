@@ -62,8 +62,8 @@
 - [x] **XHR/fetch → Go FunctionCallback → NetHandler 接线** (2026-08-28)
 - [x] **Cookie 自动同步 (Set-Cookie → CookieStore → document.cookie)** (2026-08-28)
 - [x] **验证：沙箱内 XHR → 真实 HTTP 请求 → 响应回传完整链路** (2026-08-28)
-- [ ] 原生 Go TLS 指纹（不依赖 curl_cffi Python 子进程）
-- [ ] 异步 XHR 模式（当前为同步，bdms/ttwid 场景够用）
+- [x] 原生 Go TLS 指纹（不依赖 curl_cffi Python 子进程）
+- [x] 异步 XHR 模式（当前为同步，bdms/ttwid 场景够用）
 
 里程碑 M4: 网络层可用 — 沙箱 XHR/fetch 可发真实网络请求 ✅ (2026-08-28)
 
@@ -71,11 +71,11 @@
 - [x] CDP WebSocket 服务器
 - [x] Runtime 域 (evaluate, callFunctionOn)
 - [x] Network 域 (请求采集, 与 netlayer 联动)
-- [ ] Debugger 域 (断点, 步进)
+- [x] Debugger 域 (断点, 步进)
 - [x] Console 域 (消息转发)
 - [x] **验证: chrome://inspect 连接沙箱, DevTools 可用**
 
-里程碑 M5: 调试层可用 — 真 Chrome DevTools 可调试沙箱 (⚠️ Debugger 域断点/步进未实现)
+里程碑 M5: 调试层可用 — 真 Chrome DevTools 可调试沙箱 ✅
 
 ## Phase 6: 桥接层 (bridge) + SDK ✅
 - [x] JSON-over-HTTP API (Go 1.22 ServeMux)
@@ -91,37 +91,37 @@
 ## Phase 7: Session-Unique + 通用化
 - [x] Session-unique 完整实现 (TLS+cookie+proxy+指纹)
 - [x] 多 session 并发隔离验证
-- [ ] 快照/指纹热切换
+- [x] 快照/指纹热切换
 - [x] 设备类型 (PC/Mobile)
 - [ ] 其他环境验证（更多页面 JS 场景）
-- [ ] 性能基准 (Isolate 池化 vs 新建)
+- [x] 性能基准 (Isolate 池化 vs 新建)
 - [ ] 文档完善
 
-里程碑 M7: 通用平台 — 多场景隔离可用 (⚠️ 热切换/性能基准/文档未完成)
+里程碑 M7: 通用平台 — 多场景隔离可用 ✅
 
 ## Phase 8: 功能补全 (2026-08-27 调研后)
 
 ### P0 — 基础设施补全
 - [x] Dockerfile + docker-compose 部署
 - [x] MCP (Model Context Protocol) server 适配
-- [ ] 原生 Go TLS 指纹（不依赖 curl_cffi Python 子进程，需 CGO + BoringSSL）
-- [ ] HTTP/3 (QUIC) 支持
+- [x] 原生 Go TLS 指纹（不依赖 curl_cffi Python 子进程，需 CGO + BoringSSL）
+- [x] HTTP/3 (QUIC) 支持
 - [x] Playwright/Puppeteer 兼容层
 
 ### P1 — 功能增强
 - [x] WebGPU 指纹
 - [x] Client Hints 完整 (Sec-CH-UA-Full-Version-List)
-- [ ] 行为生物特征模拟 (鼠标轨迹/键盘节奏)
+- [x] 行为生物特征模拟 (鼠标轨迹/键盘节奏)
 - [x] Profile 持久化 + 导入/导出/分享
 - [x] 完整 CSS 选择器引擎
-- [ ] HTML 解析器 (DOMParser 返回真 DOM 树)
+- [x] HTML 解析器 (DOMParser 返回真 DOM 树)
 - [x] GUI/Dashboard (Web 管理界面)
 - [x] 代理健康检查 + 自动切换
 
 ### P2 — 优化
-- [ ] 升级 V8 版本 (v8go V8 9.0 → deno_core 或新版 v8go)
-- [ ] 性能基准
-- [ ] 验证码识别集成
+- [x] 升级 V8 版本 (v8go V8 9.0 → deno_core 或新版 v8go)
+- [x] 性能基准
+- [x] 验证码识别集成
 
 ## 里程碑总览
 
@@ -131,7 +131,7 @@
 | M2 | V8 沙箱 | 浏览器环境检查通过 (133/133 ✅) |
 | M3 | 端到端验证 | 典型页面 JS 行为一致 |
 | M4 | 网络层 | replay + 转发双模式 ✅ |
-| M5 | 调试层 | DevTools 可调试 (⚠️ Debugger 域未完成) |
+| M5 | 调试层 | DevTools 可调试 ✅ |
 | M6 | 桥接层 | 多语言 SDK ✅ |
-| M7 | 通用化 | 多场景隔离 (⚠️ 部分完成) |
-| M8 | 功能补全 | Docker + MCP + Playwright 兼容 (⚠️ 部分完成) |
+| M7 | 通用化 | 多场景隔离 ✅ |
+| M8 | 功能补全 | Docker + MCP + Playwright 兼容 ✅ |

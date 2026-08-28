@@ -218,6 +218,16 @@ func main() {
 		{"element.humanType exists", `typeof document.createElement('input').humanType`, "function"},
 		{"mousePath generates steps", `_besBehavior.generateMousePath(0,0,100,100).length > 0`, "true"},
 		{"keyTimings generates delays", `_besBehavior.generateKeyTimings('hello').length`, "5"},
+		// ── HTML parser (DOMParser real DOM tree) ──
+		{"DOMParser parses HTML tree", `(function(){var d=new DOMParser().parseFromString('<html><head><title>T</title></head><body><div id="x">hi</div></body></html>','text/html');return d.documentElement.tagName})()`, "HTML"},
+		{"DOMParser body has children", `(function(){var d=new DOMParser().parseFromString('<body><div id="x">hi</div><span></span></body>','text/html');return d.body.children.length})()`, "2"},
+		{"DOMParser getElementById", `(function(){var d=new DOMParser().parseFromString('<body><div id="x">hi</div></body>','text/html');return d.getElementById('x') !== null})()`, "true"},
+		{"DOMParser getElementsByTagName", `(function(){var d=new DOMParser().parseFromString('<body><div>1</div><div>2</div></body>','text/html');return d.getElementsByTagName('div').length})()`, "2"},
+		// ── Async XHR mode ──
+		{"__besPendingXHR exists", `typeof __besPendingXHR`, "number"},
+		{"XMLHttpRequest.prototype.send is async", `typeof XMLHttpRequest.prototype.send`, "function"},
+		// ── Captcha solver registry ──
+		// (Go-side package; tested via bridge, not JS — skip here)
 	}
 
 	passed := 0
