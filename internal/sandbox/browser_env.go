@@ -445,6 +445,7 @@ func (p *PostContextBuilder) Build() {
 	// Inject complex navigator properties that can't be set via ObjectTemplate
 	// (v8go Set only accepts primitives, FunctionTemplate, ObjectTemplate)
 	p.injectComplexNavigator()
+	p.injectTimezone()
 
 	// Inject permissions API (navigator.permissions)
 	p.injectPermissions()
@@ -626,6 +627,72 @@ func (p *PostContextBuilder) injectComplexNavigator() {
 		})();
 	`, langFirst, langArr, uadJSON, connJSON)
 	p.ctx.RunScript(js, "nav-complex.js")
+}
+
+// injectTimezone overrides Intl.DateTimeFormat and Date timezone-facing
+// methods so the sandbox reports the fingerprint's timezone instead of the
+// host's (UTC in containers). Offsets come from a small per-zone table
+// covering the KB's six zones, including DST (northern-hemisphere
+// approximation) for NY/London.
+func (p *PostContextBuilder) injectTimezone() {
+	tz := p.fp.Timezone
+	if tz == "" {
+		return
+	}
+	// Base offsets in minutes (positive = east of UTC) and DST start/end
+	// (month indexes, 0-based) for zones that observe DST.
+	type zoneInfo struct {
+		offsetMin   int
+		hasDST      bool
+		dstOffsetMin int
+	}
+	zones := map[string]zoneInfo{
+		"Asia/Shanghai":     {offsetMin: 480},
+		"Asia/Tokyo":        {offsetMin: 540},
+		"Asia/Seoul":        {offsetMin: 540},
+		"Asia/Singapore":    {offsetMin: 480},
+		"America/New_York":  {offsetMin: -300, hasDST: true, dstOffsetMin: -240},
+		"Europe/London":     {offsetMin: 0, hasDST: true, dstOffsetMin: -60},
+	}
+	zi, ok := zones[tz]
+	if !ok {
+		return
+	}
+	js := fmt.Sprintf(`
+		(function(){
+			var TZ = %q, BASE = %d, HAS_DST = %v, DST = %d;
+			function localOffsetMinutes(tsMin) {
+				if (!HAS_DST) return BASE;
+				// Approximate DST: northern hemisphere, 2nd Sun Mar 02:00 → 1st Sun Nov 02:00 (local)
+				var d = new Date(tsMin * 60000);
+				// Work in UTC terms of the month boundaries; approximation is
+				// acceptable for fingerprint reporting granularity.
+				var m = d.getUTCMonth();
+				var dst = (m > 2 && m < 10);
+				return dst ? DST : BASE;
+			}
+			var OrigDTF = Intl.DateTimeFormat;
+			var NativeTZ = OrigDTF().resolvedOptions().timeZone;
+			Intl.DateTimeFormat = function(locale, options) {
+				options = options || {};
+				if (!options.timeZone) { options.timeZone = TZ; }
+				return new OrigDTF(locale, options);
+			};
+			Intl.DateTimeFormat.prototype = OrigDTF.prototype;
+			Object.getOwnPropertyNames(OrigDTF).forEach(function(k){
+				try { Intl.DateTimeFormat[k] = OrigDTF[k]; } catch(e) {}
+			});
+			Intl.DateTimeFormat.supportedLocalesOf = OrigDTF.supportedLocalesOf;
+			var origGetTimezoneOffset = Date.prototype.getTimezoneOffset;
+			Date.prototype.getTimezoneOffset = function() {
+				return -localOffsetMinutes(this.getTime() / 60000);
+			};
+			// Date.prototype.toString local fields stay UTC-based (acceptable
+			// approximation); timezone name reporting flows through the
+			// wrapped Intl.DateTimeFormat above.
+		})();
+	`, tz, zi.offsetMin, zi.hasDST, zi.dstOffsetMin)
+	p.ctx.RunScript(js, "timezone.js")
 }
 
 // injectPermissions adds navigator.permissions API
