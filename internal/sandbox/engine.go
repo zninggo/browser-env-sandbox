@@ -29,6 +29,7 @@ type Engine struct {
 // FingerprintProvider generates fingerprints (interface for dependency injection).
 type FingerprintProvider interface {
 	Generate(seed uint64, browser, os string) (*api.Fingerprint, error)
+	GenerateWithTimezone(seed uint64, browser, os, timezone string) (*api.Fingerprint, error)
 }
 
 // New creates a sandbox engine with the given fingerprint provider.
@@ -99,8 +100,8 @@ type NetResponse struct {
 
 // CreateSession creates a new sandbox session with the given options.
 func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
-	// 1. Generate fingerprint
-	fp, err := e.fpEng.Generate(opts.Seed, opts.Browser, opts.OS)
+	// 1. Generate fingerprint (timezone-constrained when opts.Timezone is set)
+	fp, err := e.fpEng.GenerateWithTimezone(opts.Seed, opts.Browser, opts.OS, opts.Timezone)
 	if err != nil {
 		return nil, fmt.Errorf("fingerprint generation failed: %w", err)
 	}
