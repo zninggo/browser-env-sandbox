@@ -120,6 +120,7 @@ type CDPClient struct {
 	conn     net.Conn
 	mu       sync.Mutex
 	requests chan CDPRequest
+	targetID string // sandbox session this client attaches to
 }
 
 // CDPRequest is a CDP protocol request.

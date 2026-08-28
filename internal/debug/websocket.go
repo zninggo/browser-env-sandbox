@@ -42,6 +42,15 @@ func (s *CDPServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	accept := computeAcceptKey(key)
 
+	// Target routing: /devtools/page/<sessionID> — which sandbox session
+	// this DevTools connection attaches to. Empty = "default" fallback.
+	targetID := "default"
+	if strings.HasPrefix(r.URL.Path, "/devtools/page/") {
+		if id := strings.TrimPrefix(r.URL.Path, "/devtools/page/"); id != "" {
+			targetID = id
+		}
+	}
+
 	response := "HTTP/1.1 101 Switching Protocols\r\n" +
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
@@ -51,11 +60,12 @@ func (s *CDPServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	bufrw.Flush()
 
-	log.Printf("[cdp] client connected from %s", conn.RemoteAddr())
+	log.Printf("[cdp] client connected from %s (target=%s)", conn.RemoteAddr(), targetID)
 
 	client := &CDPClient{
 		conn:     conn,
 		requests: make(chan CDPRequest, 100),
+		targetID: targetID,
 	}
 	s.mu.Lock()
 	s.clients[conn.RemoteAddr().String()] = client
@@ -87,7 +97,7 @@ func (s *CDPServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Process requests
 	for req := range client.requests {
-		resp := s.handleCDPRequest(req)
+		resp := s.handleCDPRequest(client, req)
 		data, _ := json.Marshal(resp)
 		if err := writeWebSocketFrame(conn, data); err != nil {
 			log.Printf("[cdp] write error: %v", err)
@@ -97,10 +107,12 @@ func (s *CDPServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCDPRequest dispatches a CDP request to the appropriate handler.
-func (s *CDPServer) handleCDPRequest(req CDPRequest) CDPResponse {
+// The client carries the target session so Runtime.evaluate lands in the
+// sandbox the DevTools window attached to.
+func (s *CDPServer) handleCDPRequest(client *CDPClient, req CDPRequest) CDPResponse {
 	switch {
 	case strings.HasPrefix(req.Method, "Runtime."):
-		return s.handleRuntime(req)
+		return s.handleRuntime(client, req)
 	case strings.HasPrefix(req.Method, "Network."):
 		return s.handleNetwork(req)
 	case strings.HasPrefix(req.Method, "Console."):
@@ -117,7 +129,7 @@ func (s *CDPServer) handleCDPRequest(req CDPRequest) CDPResponse {
 	}
 }
 
-func (s *CDPServer) handleRuntime(req CDPRequest) CDPResponse {
+func (s *CDPServer) handleRuntime(client *CDPClient, req CDPRequest) CDPResponse {
 	switch req.Method {
 	case "Runtime.enable":
 		return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
@@ -127,7 +139,7 @@ func (s *CDPServer) handleRuntime(req CDPRequest) CDPResponse {
 		}
 		json.Unmarshal(req.Params, &params)
 		if s.sessions != nil {
-			result, err := s.sessions.Eval("default", params.Expression)
+			result, err := s.sessions.Eval(client.targetID, params.Expression)
 			if err != nil {
 				return CDPResponse{ID: req.ID, Error: &CDPError{Code: -1, Message: err.Error()}}
 			}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/zninggo/bes/internal/bridge"
+	"github.com/zninggo/bes/internal/debug"
 	"github.com/zninggo/bes/internal/fpengine"
 	"github.com/zninggo/bes/internal/netlayer"
 	"github.com/zninggo/bes/internal/sandbox"
@@ -26,6 +27,7 @@ import (
 func main() {
 	addr := flag.String("addr", "0.0.0.0", "bind address")
 	port := flag.Int("port", 8080, "HTTP API server port")
+	cdpPort := flag.Int("cdp-port", 0, "CDP debug server port (0 = disabled)")
 	poolSize := flag.Int("pool", 8, "V8 isolate pool size")
 	authToken := flag.String("auth-token", "", "API auth token (empty = no auth); overridden by BES_AUTH_TOKEN env")
 	flag.Parse()
@@ -61,6 +63,19 @@ func main() {
 
 	svc := bridge.NewService(engine)
 
+	// CDP debug server: exposes /json/list + WebSocket so Chrome DevTools can
+	// connect to sandbox sessions. Off by default; enable with --cdp-port.
+	// Bind to loopback only — CDP gives full JS control, never expose it
+	// unauthenticated. Use an SSH tunnel for remote debugging.
+	if *cdpPort != 0 {
+		cdp := debug.NewCDPServer(fmt.Sprintf("127.0.0.1:%d", *cdpPort), &cdpBridge{svc})
+		if err := cdp.Start(); err != nil {
+			log.Printf("[bes-server] CDP server start failed: %v", err)
+		} else {
+			log.Printf("[bes-server] CDP debug on http://127.0.0.1:%d (use SSH tunnel for remote)", *cdpPort)
+		}
+	}
+
 	listenAddr := fmt.Sprintf("%s:%d", *addr, *port)
 	srv := bridge.NewServer(listenAddr, svc, *authToken)
 
@@ -95,6 +110,30 @@ func main() {
 // defaultChromeVersion is the Chrome version used for TLS fingerprint target.
 // Should match the fingerprint engine's default browser version.
 const defaultChromeVersion = "150"
+
+// cdpBridge adapts bridge.Service to the debug.SessionProvider interface
+// (Eval + GetSessions), keeping both packages unaware of each other.
+type cdpBridge struct {
+	svc *bridge.Service
+}
+
+func (c *cdpBridge) Eval(sessionID, code string) (string, error) {
+	return c.svc.Eval(sessionID, code)
+}
+
+func (c *cdpBridge) GetSessions() []debug.SessionInfo {
+	summaries := c.svc.ListSessions()
+	out := make([]debug.SessionInfo, 0, len(summaries))
+	for _, s := range summaries {
+		out = append(out, debug.SessionInfo{
+			ID:    s.SessionID,
+			Title: s.Browser,
+			URL:   s.UA,
+			Type:  "page",
+		})
+	}
+	return out
+}
 
 // netHandlerAdapter adapts netlayer.Handler to sandbox.NetHandler.
 // netlayer.Response and sandbox.NetResponse are structurally identical, but
