@@ -22,6 +22,7 @@ type Engine struct {
 	pool               *IsolatePool
 	fpEng              FingerprintProvider
 	consoleSinkFactory ConsoleSinkFactory
+	netHandlerFactory  NetHandlerFactory
 	mu                 sync.Mutex
 }
 
@@ -50,6 +51,18 @@ func New(fpEng FingerprintProvider, poolSize int) *Engine {
 // existing behaviour (including the CLI) is unchanged.
 func (e *Engine) SetConsoleSinkFactory(f ConsoleSinkFactory) {
 	e.consoleSinkFactory = f
+}
+
+// NetHandlerFactory creates a NetHandler for a new session. When set, each
+// session's XHR/fetch make real HTTP requests through the handler. When nil
+// (default), XHR/fetch are stubs — suitable for pure JS execution / signing.
+type NetHandlerFactory func(opts api.SessionOptions, cookieStore *CookieStore) NetHandler
+
+// SetNetHandlerFactory configures a factory that produces a NetHandler for
+// each new session. This wires the sandbox's XHR/fetch to a real network
+// stack (e.g. the netlayer package with curl_cffi TLS fingerprinting).
+func (e *Engine) SetNetHandlerFactory(f NetHandlerFactory) {
+	e.netHandlerFactory = f
 }
 
 // Session is a single sandbox execution context.
@@ -111,6 +124,13 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 		consoleSink = e.consoleSinkFactory()
 	}
 
+	// Optional per-session net handler. When a factory is configured, each
+	// session's XHR/fetch make real HTTP requests. nil = stubs (offline mode).
+	var netHandler NetHandler
+	if e.netHandlerFactory != nil {
+		netHandler = e.netHandlerFactory(opts, cookieStore)
+	}
+
 	builder := &EnvBuilder{
 		iso:         iso,
 		global:      global,
@@ -119,6 +139,7 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 		cookieStore: cookieStore,
 		timerMgr:    timerMgr,
 		consoleSink: consoleSink,
+		netHandler:  netHandler,
 	}
 	builder.Build()
 
@@ -134,6 +155,7 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 		location:    location,
 		cookieStore: cookieStore,
 		timerMgr:    timerMgr,
+		netHandler:  netHandler,
 	}
 	postBuilder.Build()
 

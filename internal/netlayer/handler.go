@@ -253,6 +253,14 @@ func (h *Handler) SetCookie(name, value string) {
 	h.cookieJar[name] = value
 }
 
+// TLSBackend returns which TLS backend is in use (for logging).
+func (h *Handler) TLSBackend() string {
+	if h.tlsClient != nil {
+		return h.tlsClient.Backend()
+	}
+	return "none"
+}
+
 // SaveRecording writes all recorded requests to a file.
 func (h *Handler) SaveRecording(path string) error {
 	h.mu.Lock()

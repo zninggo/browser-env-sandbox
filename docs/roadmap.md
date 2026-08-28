@@ -51,17 +51,21 @@
 
 里程碑 M3: WAF 签名一致 — 第一个实战验证
 
-## Phase 4: 网络层 (netlayer) ✅
-- [x] XHR/fetch 拦截 (Go 侧)
+## Phase 4: 网络层 (netlayer)
+- [x] XHR/fetch 拦截架构设计
 - [x] 离线 replay 引擎
-- [x] 在线转发 (curl-impersonate 集成)
+- [x] 在线转发 (curl-impersonate + curl_cffi + Go HTTP 三级 fallback)
 - [x] Cookie jar (与 document.cookie 联动)
 - [x] TLS 指纹配置 (与 UA 版本一致)
 - [x] 代理管理 (per-session)
 - [x] 请求录制
-- [x] **验证：沙箱内 XHR → replay 响应 → 签名计算完整链路**
+- [x] **XHR/fetch → Go FunctionCallback → NetHandler 接线** (2026-08-28)
+- [x] **Cookie 自动同步 (Set-Cookie → CookieStore → document.cookie)** (2026-08-28)
+- [x] **验证：沙箱内 XHR → 真实 HTTP 请求 → 响应回传完整链路** (2026-08-28)
+- [ ] 原生 Go TLS 指纹（不依赖 curl_cffi Python 子进程）
+- [ ] 异步 XHR 模式（当前为同步，bdms/ttwid 场景够用）
 
-里程碑 M4: 网络层可用 — 离线 replay + 在线转发双模式 ✅
+里程碑 M4: 网络层可用 — 沙箱 XHR/fetch 可发真实网络请求 ✅ (2026-08-28)
 
 ## Phase 5: 调试层 (debug)
 - [x] CDP WebSocket 服务器
@@ -100,7 +104,7 @@
 ### P0 — 基础设施补全
 - [x] Dockerfile + docker-compose 部署
 - [x] MCP (Model Context Protocol) server 适配
-- [ ] 原生 Go TLS 指纹（不依赖 curl-impersonate 二进制）
+- [ ] 原生 Go TLS 指纹（不依赖 curl_cffi Python 子进程，需 CGO + BoringSSL）
 - [ ] HTTP/3 (QUIC) 支持
 - [x] Playwright/Puppeteer 兼容层
 

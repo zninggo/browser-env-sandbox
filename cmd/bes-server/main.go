@@ -18,7 +18,9 @@ import (
 
 	"github.com/zninggo/bes/internal/bridge"
 	"github.com/zninggo/bes/internal/fpengine"
+	"github.com/zninggo/bes/internal/netlayer"
 	"github.com/zninggo/bes/internal/sandbox"
+	"github.com/zninggo/bes/pkg/api"
 )
 
 func main() {
@@ -36,6 +38,27 @@ func main() {
 	// Wire the stack: fingerprint engine -> sandbox engine -> bridge service.
 	fpEng := fpengine.New()
 	engine := sandbox.New(fpEng, *poolSize)
+
+	// Wire the network layer: each session gets a netlayer.Handler that makes
+	// real HTTP requests with TLS fingerprint matching (curl_cffi). When
+	// NetMode is "live" (default), XHR/fetch in the sandbox hit the real
+	// internet. When "replay", they return pre-recorded responses.
+	engine.SetNetHandlerFactory(func(opts api.SessionOptions, cookieStore *sandbox.CookieStore) sandbox.NetHandler {
+		netMode := opts.NetMode
+		if netMode == "" {
+			netMode = "live"
+		}
+		tlsTarget := "chrome" + defaultChromeVersion
+		handler, err := netlayer.New(netlayer.Mode(netMode), opts.Recording, opts.Proxy, tlsTarget)
+		if err != nil {
+			log.Printf("[bes-server] net handler init failed (falling back to stubs): %v", err)
+			return nil
+		}
+		backend := handler.TLSBackend()
+		log.Printf("[bes-server] session net: mode=%s tls=%s proxy=%s", netMode, backend, opts.Proxy)
+		return &netHandlerAdapter{handler: handler, cookieStore: cookieStore}
+	})
+
 	svc := bridge.NewService(engine)
 
 	listenAddr := fmt.Sprintf("%s:%d", *addr, *port)
@@ -67,4 +90,29 @@ func main() {
 	}
 	svc.Dispose() // close all sessions + release the isolate pool
 	log.Println("[bes-server] stopped")
+}
+
+// defaultChromeVersion is the Chrome version used for TLS fingerprint target.
+// Should match the fingerprint engine's default browser version.
+const defaultChromeVersion = "150"
+
+// netHandlerAdapter adapts netlayer.Handler to sandbox.NetHandler.
+// netlayer.Response and sandbox.NetResponse are structurally identical, but
+// live in different packages, so we need a thin adapter.
+type netHandlerAdapter struct {
+	handler     *netlayer.Handler
+	cookieStore *sandbox.CookieStore
+}
+
+func (a *netHandlerAdapter) Request(method, urlStr string, headers map[string]string, body []byte) (*sandbox.NetResponse, error) {
+	resp, err := a.handler.Request(method, urlStr, headers, body)
+	if err != nil {
+		return nil, err
+	}
+	return &sandbox.NetResponse{
+		Status:  resp.Status,
+		Headers: resp.Headers,
+		Body:    resp.Body,
+		Cookies: resp.Cookies,
+	}, nil
 }

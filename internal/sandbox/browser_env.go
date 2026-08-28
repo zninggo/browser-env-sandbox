@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -21,6 +22,7 @@ type EnvBuilder struct {
 	cookieStore *CookieStore
 	timerMgr    *TimerManager
 	consoleSink ConsoleSink
+	netHandler  NetHandler
 }
 
 // Build injects all browser globals into the ObjectTemplate.
@@ -409,6 +411,7 @@ type PostContextBuilder struct {
 	location    string
 	cookieStore *CookieStore
 	timerMgr    *TimerManager
+	netHandler  NetHandler
 }
 
 func (p *PostContextBuilder) Build() {
@@ -640,15 +643,21 @@ func (p *PostContextBuilder) injectPermissions() {
 	p.ctx.RunScript(js, "permissions.js")
 }
 
-// injectFetchXHR adds fetch and XMLHttpRequest stubs via JS
+// injectFetchXHR adds fetch and XMLHttpRequest to the sandbox.
+// When a NetHandler is configured, XHR/fetch make real HTTP requests via a
+// Go callback. When no handler is set, they fall back to stubs (for
+// offline/signing-only use cases).
 func (p *PostContextBuilder) injectFetchXHR() {
-	js := `
+	if p.netHandler != nil {
+		p.injectRealFetchXHR()
+		return
+	}
+	// Stub implementation (no network — for pure JS execution / signing)
+	stubJS := `
 		(function(){
-			// fetch stub — real impl in Phase 4 via netlayer
 			window.fetch = function(resource, options) {
 				var mockResp = {
-					ok: true,
-					status: 200,
+					ok: true, status: 200,
 					headers: { get: function() { return null; } },
 					json: function() { return Promise.resolve({}); },
 					text: function() { return Promise.resolve(''); },
@@ -656,19 +665,123 @@ func (p *PostContextBuilder) injectFetchXHR() {
 				};
 				return Promise.resolve(mockResp);
 			};
+			window.XMLHttpRequest = function() {
+				this.readyState = 0; this.status = 0;
+				this.responseText = ''; this.response = '';
+				this._method = 'GET'; this._url = ''; this._headers = {};
+			};
+			window.XMLHttpRequest.prototype.open = function(method, url) {
+				this._method = method; this._url = url; this.readyState = 1;
+			};
+			window.XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+				this._headers[name] = value;
+			};
+			window.XMLHttpRequest.prototype.send = function(body) {};
+			window.XMLHttpRequest.prototype.getAllResponseHeaders = function() { return ''; };
+			window.XMLHttpRequest.prototype.getResponseHeader = function(name) { return null; };
+			window.XMLHttpRequest.prototype.abort = function() {};
+		})();
+	`
+	p.ctx.RunScript(stubJS, "fetch-xhr.js")
+}
 
-			// XMLHttpRequest stub
+// injectRealFetchXHR wires XHR/fetch to a Go FunctionCallback (__besNetRequest)
+// that calls the session's NetHandler to make real HTTP requests.
+func (p *PostContextBuilder) injectRealFetchXHR() {
+	iso := p.iso
+	handler := p.netHandler
+	cookies := p.cookieStore
+
+	// Go callback: __besNetRequest(method, url, headersJSON, body) → responseJSON
+	callback := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		args := info.Args()
+		if len(args) < 2 {
+			v, _ := v8go.NewValue(iso, `{"status":0,"body":"","headers":{}}`)
+			return v
+		}
+		method := args[0].String()
+		urlStr := args[1].String()
+		headersJSON := "{}"
+		if len(args) > 2 {
+			headersJSON = args[2].String()
+		}
+		body := ""
+		if len(args) > 3 {
+			body = args[3].String()
+		}
+
+		// Parse headers
+		var headers map[string]string
+		if err := json.Unmarshal([]byte(headersJSON), &headers); err != nil {
+			headers = make(map[string]string)
+		}
+
+		// Inject cookies from the sandbox cookie store
+		cookieStr := cookies.String()
+		if cookieStr != "" {
+			if headers == nil {
+				headers = make(map[string]string)
+			}
+			if _, hasCookie := headers["Cookie"]; !hasCookie {
+				headers["Cookie"] = cookieStr
+			}
+		}
+
+		// Make the real HTTP request via NetHandler
+		resp, err := handler.Request(method, urlStr, headers, []byte(body))
+		if err != nil {
+			result, _ := json.Marshal(map[string]any{
+				"status": 0, "body": "", "headers": map[string]string{},
+				"error": err.Error(),
+			})
+			v, _ := v8go.NewValue(iso, string(result))
+			return v
+		}
+
+		// Update cookie store from response Set-Cookie
+		if resp.Cookies != nil {
+			for k, v := range resp.Cookies {
+				cookies.Set(k, v, "/", "")
+			}
+		}
+
+		// Return JSON response
+		result, _ := json.Marshal(map[string]any{
+			"status":  resp.Status,
+			"body":    resp.Body,
+			"headers": resp.Headers,
+		})
+		v, _ := v8go.NewValue(iso, string(result))
+		return v
+	}
+
+	// Register the Go callback as a global function
+	fn := v8go.NewFunctionTemplate(iso, callback)
+	fnVal := fn.GetFunction(p.ctx)
+	p.global.Set("__besNetRequest", fnVal)
+
+	// Real XHR + fetch implementation that calls __besNetRequest
+	realJS := `
+		(function(){
 			window.XMLHttpRequest = function() {
 				this.readyState = 0;
 				this.status = 0;
+				this.statusText = '';
 				this.responseText = '';
 				this.response = '';
+				this.responseType = '';
+				this.responseText = '';
 				this.onreadystatechange = null;
 				this.onload = null;
 				this.onerror = null;
+				this.onabort = null;
+				this.ontimeout = null;
+				this.withCredentials = false;
+				this.timeout = 0;
 				this._method = 'GET';
 				this._url = '';
 				this._headers = {};
+				this._responseHeaders = {};
 			};
 			window.XMLHttpRequest.prototype.open = function(method, url) {
 				this._method = method;
@@ -680,16 +793,66 @@ func (p *PostContextBuilder) injectFetchXHR() {
 				this._headers[name] = value;
 			};
 			window.XMLHttpRequest.prototype.send = function(body) {
-				// Stub: real impl in Phase 4 via netlayer
+				var respJSON = __besNetRequest(this._method, this._url, JSON.stringify(this._headers), body || '');
+				try {
+					var r = JSON.parse(respJSON);
+					this.status = r.status;
+					this.statusText = '';
+					this.responseText = r.body || '';
+					this.response = r.body || '';
+					this._responseHeaders = r.headers || {};
+					this.readyState = 4;
+					if (this.onreadystatechange) this.onreadystatechange();
+					if (r.status > 0) {
+						if (this.onload) this.onload();
+					} else {
+						if (this.onerror) this.onerror(new Error(r.error || 'network error'));
+					}
+				} catch(e) {
+					this.status = 0;
+					this.readyState = 4;
+					if (this.onerror) this.onerror(e);
+				}
 			};
 			window.XMLHttpRequest.prototype.getAllResponseHeaders = function() {
-				return '';
+				var result = '';
+				for (var k in this._responseHeaders) {
+					result += k + ': ' + this._responseHeaders[k] + '\r\n';
+				}
+				return result;
 			};
 			window.XMLHttpRequest.prototype.getResponseHeader = function(name) {
-				return null;
+				return this._responseHeaders[name] || null;
 			};
 			window.XMLHttpRequest.prototype.abort = function() {};
+
+			window.fetch = function(resource, options) {
+				options = options || {};
+				var method = options.method || 'GET';
+				var urlStr = typeof resource === 'string' ? resource : (resource.url || '');
+				var headers = options.headers || {};
+				var body = options.body || '';
+				var respJSON = __besNetRequest(method, urlStr, JSON.stringify(headers), typeof body === 'string' ? body : '');
+				return new Promise(function(resolve, reject) {
+					try {
+						var r = JSON.parse(respJSON);
+						resolve({
+							ok: r.status >= 200 && r.status < 300,
+							status: r.status,
+							statusText: '',
+							headers: {
+								get: function(name) { return (r.headers && r.headers[name]) || null; },
+								has: function(name) { return !!(r.headers && r.headers[name]); }
+							},
+							text: function() { return Promise.resolve(r.body || ''); },
+							json: function() { return Promise.resolve(JSON.parse(r.body || '{}')); },
+							arrayBuffer: function() { return Promise.resolve(new ArrayBuffer(0)); },
+							clone: function() { return this; }
+						});
+					} catch(e) { reject(e); }
+				});
+			};
 		})();
 	`
-	p.ctx.RunScript(js, "fetch-xhr.js")
+	p.ctx.RunScript(realJS, "fetch-xhr.js")
 }
