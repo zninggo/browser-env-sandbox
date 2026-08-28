@@ -6,6 +6,7 @@
 package netlayer
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -116,10 +117,21 @@ type Response struct {
 	Status  int
 	Headers map[string]string
 	Body    string
-	Cookies map[string]string
+	// BodyB64 is the raw response body base64-encoded (std encoding). The
+	// Body string field cannot carry arbitrary bytes losslessly: a Go string
+	// holding non-UTF-8 data gets mangled on the way through JSON
+	// serialization into V8 (invalid bytes → U+FFFD), so binary payloads
+	// (images, fonts, WASM, ...) must travel via BodyB64.
+	// Consumers MUST prefer BodyB64 when non-empty and fall back to Body
+	// only for legacy/replay data.
+	BodyB64    string
+	Cookies    map[string]string
 	// SetCookies holds raw Set-Cookie header values (one per line).
 	SetCookies []string
 }
+
+// b64Encode is the single helper every backend uses to fill BodyB64.
+func b64Encode(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
 func (h *Handler) handleReplay(method, urlStr string) (*Response, error) {
 	if h.replay == nil {
@@ -249,6 +261,7 @@ func (h *Handler) handleLiveFallback(method, urlStr string, headers map[string]s
 		Status:     resp.StatusCode,
 		Headers:    respHeaders,
 		Body:       string(respBody),
+		BodyB64:    b64Encode(respBody),
 		Cookies:    cookies,
 		SetCookies: setCookies,
 	}, nil

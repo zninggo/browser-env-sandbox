@@ -153,6 +153,7 @@ func (a *netHandlerAdapter) Request(method, urlStr string, headers map[string]st
 		Status:     resp.Status,
 		Headers:    resp.Headers,
 		Body:       resp.Body,
+		BodyB64:    resp.BodyB64,
 		Cookies:    resp.Cookies,
 		SetCookies: resp.SetCookies,
 	}, nil

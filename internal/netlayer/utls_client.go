@@ -231,11 +231,14 @@ func parseHTTP1Response(raw []byte) (*Response, error) {
 		}
 	}
 
+	// Decompress before base64 so JS consumers always see the decoded bytes
+	// (netlayer handles Content-Encoding; the sandbox never re-decompresses).
 	body := string(bodyBytes)
 	if headers["Content-Encoding"] == "gzip" {
 		if gr, err := gzip.NewReader(strings.NewReader(body)); err == nil {
 			if data, err := io.ReadAll(gr); err == nil {
 				body = string(data)
+				bodyBytes = data
 			}
 			gr.Close()
 		}
@@ -243,6 +246,7 @@ func parseHTTP1Response(raw []byte) (*Response, error) {
 		if br := brotli.NewReader(strings.NewReader(body)); br != nil {
 			if data, err := io.ReadAll(br); err == nil {
 				body = string(data)
+				bodyBytes = data
 			}
 		}
 	}
@@ -251,6 +255,7 @@ func parseHTTP1Response(raw []byte) (*Response, error) {
 		Status:     status,
 		Headers:    headers,
 		Body:       body,
+		BodyB64:    b64Encode(bodyBytes),
 		Cookies:    cookies,
 		SetCookies: setCookies,
 	}, nil

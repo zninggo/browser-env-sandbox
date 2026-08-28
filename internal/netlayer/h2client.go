@@ -263,11 +263,13 @@ func readH2Response(framer *http2.Framer) (*Response, error) {
 	}
 
 	bodyStr := decompressH2Body(respHeaders["Content-Encoding"], respBody.Bytes())
+	bodyBytes := decompressH2BodyBytes(respHeaders["Content-Encoding"], respBody.Bytes())
 
 	return &Response{
 		Status:     status,
 		Headers:    respHeaders,
 		Body:       bodyStr,
+		BodyB64:    b64Encode(bodyBytes),
 		Cookies:    cookies,
 		SetCookies: setCookies,
 	}, nil
@@ -305,26 +307,33 @@ func decodeH2Headers(block []byte, hdec *hpack.Decoder, headers *map[string]stri
 
 // decompressH2Body decompresses the response body based on Content-Encoding.
 func decompressH2Body(encoding string, data []byte) string {
+	return string(decompressH2BodyBytes(encoding, data))
+}
+
+// decompressH2BodyBytes decompresses the response body based on
+// Content-Encoding, returning the raw decoded bytes (lossless, unlike the
+// string variant which mangles non-UTF-8 payloads).
+func decompressH2BodyBytes(encoding string, data []byte) []byte {
 	switch strings.ToLower(encoding) {
 	case "gzip":
 		gr, err := gzip.NewReader(bytes.NewReader(data))
 		if err != nil {
-			return string(data)
+			return data
 		}
 		defer gr.Close()
 		dec, err := io.ReadAll(gr)
 		if err != nil {
-			return string(data)
+			return data
 		}
-		return string(dec)
+		return dec
 	case "br":
 		dec, err := io.ReadAll(brotli.NewReader(bytes.NewReader(data)))
 		if err != nil {
-			return string(data)
+			return data
 		}
-		return string(dec)
+		return dec
 	default:
-		return string(data)
+		return data
 	}
 }
 
