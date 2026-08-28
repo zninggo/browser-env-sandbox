@@ -5,8 +5,8 @@ services:
     build: .
     container_name: bes-server
     ports:
-      - "19821:19821"   # JSON-RPC API
-      - "9223:9223"     # CDP debug
+      - "127.0.0.1:19821:19821"   # JSON-RPC API (reverse-proxied via traefik)
+      - "127.0.0.1:9223:9223"     # CDP debug
     environment:
       - BES_LOG_LEVEL=info
       - BES_POOL_SIZE=8
@@ -14,12 +14,19 @@ services:
       - ./snapshots:/app/snapshots           # Fingerprint snapshots
       - ./recordings:/app/recordings         # Network recordings for replay
       - bes-data:/app/data                   # Persistent data (profiles, cookies)
+    networks:
+      - default                              # internal (compose default)
+      - dokploy-network                      # external: traefik routes bes.zsso.de → bes-server:19821
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "bes", "version"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+networks:
+  dokploy-network:
+    external: true
 
 volumes:
   bes-data:
