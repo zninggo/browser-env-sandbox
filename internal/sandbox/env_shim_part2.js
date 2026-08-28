@@ -130,18 +130,88 @@
   };
 
   // ── Blob / URL.createObjectURL ──
+  // Stores the actual parts so blob().arrayBuffer()/text() round-trip the
+  // bytes (needed by fetch→blob→FileReader binary flows).
   window.Blob = function(parts, options) {
-    this.size = 0;
-    this.type = (options && options.type) || '';
+    var chunks = [];
+    var total = 0;
     if (parts) {
       for (var i = 0; i < parts.length; i++) {
         var p = parts[i];
-        this.size += (typeof p === 'string') ? p.length : (p.byteLength || p.size || 0);
+        if (typeof p === 'string') {
+          var bytes = new Uint8Array(p.length);
+          for (var j = 0; j < p.length; j++) bytes[j] = p.charCodeAt(j) & 0xFF;
+          chunks.push(bytes); total += bytes.length;
+        } else if (p instanceof ArrayBuffer) {
+          chunks.push(new Uint8Array(p.slice(0))); total += p.byteLength;
+        } else if (p && p.buffer instanceof ArrayBuffer) {
+          // TypedArray view: copy its byte range (respects byteOffset/length).
+          var view = new Uint8Array(p.buffer, p.byteOffset || 0, p.byteLength || p.length);
+          chunks.push(new Uint8Array(view)); total += view.length;
+        } else if (p && typeof p.size === 'number') {
+          // Blob/File-like: keep as-is, resolved lazily by readers.
+          chunks.push(p); total += p.size;
+        }
       }
     }
-    this.text = function() { return Promise.resolve(parts ? parts.join('') : ''); };
-    this.arrayBuffer = function() { return Promise.resolve(new ArrayBuffer(this.size)); };
-    this.slice = function() { return new Blob([], { type: this.type }); };
+    // Privately hold the flat byte copy (Blob-likes flattened on read).
+    var flat = null;
+    var ensureFlat = function() {
+      if (flat) return flat;
+      var out = new Uint8Array(total);
+      var off = 0;
+      for (var i = 0; i < chunks.length; i++) {
+        var c = chunks[i];
+        if (c instanceof Uint8Array) { out.set(c, off); off += c.length; }
+        else if (typeof c._besBytes === 'function') {
+          var b = c._besBytes();
+          out.set(b, off); off += b.length;
+        }
+      }
+      flat = out;
+      return flat;
+    };
+    this.size = total;
+    this.type = (options && options.type) || '';
+    this._besBytes = ensureFlat;
+    this.text = function() {
+      var bytes = ensureFlat();
+      // UTF-8 decode with U+FFFD for malformed sequences (WHATWG blob.text()).
+      var s = '';
+      for (var i = 0; i < bytes.length; ) {
+        var b0 = bytes[i];
+        if (b0 < 0x80) { s += String.fromCharCode(b0); i++; }
+        else if (b0 >= 0xC2 && b0 < 0xE0 && i + 1 < bytes.length && (bytes[i+1] & 0xC0) === 0x80) {
+          s += String.fromCharCode(((b0 & 0x1F) << 6) | (bytes[i+1] & 0x3F)); i += 2;
+        }
+        else if (b0 >= 0xE0 && b0 < 0xF0 && i + 2 < bytes.length && (bytes[i+1] & 0xC0) === 0x80 && (bytes[i+2] & 0xC0) === 0x80) {
+          s += String.fromCharCode(((b0 & 0x0F) << 12) | ((bytes[i+1] & 0x3F) << 6) | (bytes[i+2] & 0x3F)); i += 3;
+        }
+        else if (b0 >= 0xF0 && b0 < 0xF5 && i + 3 < bytes.length && (bytes[i+1] & 0xC0) === 0x80 && (bytes[i+2] & 0xC0) === 0x80 && (bytes[i+3] & 0xC0) === 0x80) {
+          var cp = ((b0 & 0x07) << 18) | ((bytes[i+1] & 0x3F) << 12) | ((bytes[i+2] & 0x3F) << 6) | (bytes[i+3] & 0x3F);
+          cp -= 0x10000;
+          s += String.fromCharCode(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF));
+          i += 4;
+        }
+        else { s += '\uFFFD'; i++; }
+      }
+      return Promise.resolve(s);
+    };
+    this.arrayBuffer = function() {
+      var bytes = ensureFlat();
+      var ab = new ArrayBuffer(bytes.length);
+      new Uint8Array(ab).set(bytes);
+      return Promise.resolve(ab);
+    };
+    this.slice = function(start, end, contentType) {
+      var bytes = ensureFlat();
+      var s = (start === undefined || start < 0) ? 0 : (start > bytes.length ? bytes.length : start);
+      var e = (end === undefined || end > bytes.length) ? bytes.length : (end < 0 ? 0 : end);
+      var part = bytes.subarray(s, e);
+      var ab = new ArrayBuffer(part.length);
+      new Uint8Array(ab).set(part);
+      return new Blob([ab], { type: contentType || this.type });
+    };
   };
   var urlCounter = 0;
   var urlStore = {};

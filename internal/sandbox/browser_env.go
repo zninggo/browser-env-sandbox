@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -951,11 +952,28 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 			}
 		}
 
+		// Binary-safe body transport: BodyB64 carries the raw bytes losslessly
+		// across the Go→V8 boundary (JSON string). The plain body field gets
+		// latin1 semantics (byte value == charCodeAt value) so legacy text()
+		// readers see every byte; real UTF-8 text is served by response.text()
+		// decoding from the same bytes.
+		bodyOut := resp.Body
+		if resp.BodyB64 != "" {
+			if raw, err := base64.StdEncoding.DecodeString(resp.BodyB64); err == nil {
+				var sb strings.Builder
+				for _, b := range raw {
+					sb.WriteByte(b)
+				}
+				bodyOut = sb.String()
+			}
+		}
+
 		// Return JSON response
 		result, _ := json.Marshal(map[string]any{
-			"status":  resp.Status,
-			"body":    resp.Body,
-			"headers": resp.Headers,
+			"status":   resp.Status,
+			"body":     bodyOut,
+			"bodyB64":  resp.BodyB64,
+			"headers":  resp.Headers,
 		})
 		v, _ := v8go.NewValue(iso, string(result))
 		return v
@@ -966,9 +984,93 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 	fnVal := fn.GetFunction(p.ctx)
 	p.global.Set("__besNetRequest", fnVal)
 
-	// Real XHR + fetch implementation that calls __besNetRequest
+	// Real XHR + fetch implementation that calls __besNetRequest.
+	//
+	// Binary-safe by design: the Go callback returns the response body twice —
+	// bodyB64 (base64 of the raw bytes, lossless) and body (latin1 semantics:
+	// byte value == charCodeAt value). __besB64ToUint8Array decodes bodyB64
+	// into a real Uint8Array so arrayBuffer()/blob()/XHR responseType all get
+	// byte-exact data; text() re-decodes the bytes as UTF-8 per the WHATWG
+	// spec (invalid sequences become U+FFFD, same as a real browser).
 	realJS := `
 		(function(){
+			// __besB64ToUint8Array: shared base64 → Uint8Array decoder (std alphabet).
+			window.__besB64ToUint8Array = function(b64) {
+				var bin = atob(b64);
+				var out = new Uint8Array(bin.length);
+				for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+				return out;
+			};
+
+			// __besBytesToUTF8: Uint8Array → real UTF-8 string.
+			// WHATWG fetch/TextDecoder semantics: malformed sequences → U+FFFD.
+			window.__besBytesToUTF8 = function(bytes) {
+				var s = '';
+				for (var i = 0; i < bytes.length; ) {
+					var b0 = bytes[i];
+					if (b0 < 0x80) { s += String.fromCharCode(b0); i++; }
+					else if (b0 >= 0xC2 && b0 < 0xE0 && i + 1 < bytes.length && (bytes[i+1] & 0xC0) === 0x80) {
+						s += String.fromCharCode(((b0 & 0x1F) << 6) | (bytes[i+1] & 0x3F)); i += 2;
+					}
+					else if (b0 >= 0xE0 && b0 < 0xF0 && i + 2 < bytes.length && (bytes[i+1] & 0xC0) === 0x80 && (bytes[i+2] & 0xC0) === 0x80) {
+						s += String.fromCharCode(((b0 & 0x0F) << 12) | ((bytes[i+1] & 0x3F) << 6) | (bytes[i+2] & 0x3F)); i += 3;
+					}
+					else if (b0 >= 0xF0 && b0 < 0xF5 && i + 3 < bytes.length && (bytes[i+1] & 0xC0) === 0x80 && (bytes[i+2] & 0xC0) === 0x80 && (bytes[i+3] & 0xC0) === 0x80) {
+						var cp = ((b0 & 0x07) << 18) | ((bytes[i+1] & 0x3F) << 12) | ((bytes[i+2] & 0x3F) << 6) | (bytes[i+3] & 0x3F);
+						cp -= 0x10000;
+						s += String.fromCharCode(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF));
+						i += 4;
+					}
+					else { s += '\uFFFD'; i++; }
+				}
+				return s;
+			};
+
+			// __besMakeResponse builds the fetch Response object from the
+			// netlayer JSON. All readers share one set of decoded bytes.
+			window.__besMakeResponse = function(r) {
+				var bytes = r.bodyB64 ? __besB64ToUint8Array(r.bodyB64) : null;
+				var headerObj = {
+					get: function(name) {
+						name = String(name).toLowerCase();
+						for (var k in (r.headers || {})) {
+							if (k.toLowerCase() === name) return r.headers[k];
+						}
+						return null;
+					},
+					has: function(name) { return this.get(name) !== null; }
+				};
+				return {
+					ok: r.status >= 200 && r.status < 300,
+					status: r.status,
+					statusText: '',
+					headers: headerObj,
+					bodyUsed: false,
+					text: function() {
+						this.bodyUsed = true;
+						// UTF-8 decode straight from the raw bytes (WHATWG semantics);
+						// never via the latin1 string — that would double-mangle CJK.
+						return Promise.resolve(bytes ? __besBytesToUTF8(bytes) : (r.body || ''));
+					},
+					json: function() {
+						this.bodyUsed = true;
+						var t = bytes ? __besBytesToUTF8(bytes) : (r.body || '');
+						try { return Promise.resolve(JSON.parse(t || '{}')); }
+						catch(e) { return Promise.reject(e); }
+					},
+					arrayBuffer: function() {
+						this.bodyUsed = true;
+						if (!bytes) return Promise.resolve(new ArrayBuffer(0));
+						return Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+					},
+					blob: function() {
+						this.bodyUsed = true;
+						return Promise.resolve(new Blob(bytes ? [bytes] : [], { type: headerObj.get('content-type') || '' }));
+					},
+					clone: function() { return this; }
+				};
+			};
+
 			window.XMLHttpRequest = function() {
 				this.readyState = 0;
 				this.status = 0;
@@ -1004,9 +1106,21 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 					var r = JSON.parse(respJSON);
 					this.status = r.status;
 					this.statusText = '';
-					this.responseText = r.body || '';
-					this.response = r.body || '';
 					this._responseHeaders = r.headers || {};
+					// latin1 body: charCodeAt(i) == byte i (byte-exact, lossless).
+					this.responseText = r.body || '';
+					if (this.responseType === 'arraybuffer') {
+						this.response = r.bodyB64 ? __besB64ToUint8Array(r.bodyB64).buffer : new ArrayBuffer(0);
+					} else if (this.responseType === 'blob') {
+						this.response = new Blob(r.bodyB64 ? [__besB64ToUint8Array(r.bodyB64)] : [], { type: this.getResponseHeader('Content-Type') || '' });
+					} else if (this.responseType === 'json') {
+						try { this.response = JSON.parse(r.body || 'null'); } catch(e) { this.response = null; }
+					} else if (this.responseType === 'document') {
+						this.response = (new DOMParser()).parseFromString(r.body || '', 'text/xml');
+					} else {
+						// '' (text) and 'text': the latin1 string.
+						this.response = r.body || '';
+					}
 					this.readyState = 4;
 					if (this.onreadystatechange) this.onreadystatechange();
 					if (r.status > 0) {
@@ -1028,33 +1142,27 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 				return result;
 			};
 			window.XMLHttpRequest.prototype.getResponseHeader = function(name) {
-				return this._responseHeaders[name] || null;
+				name = String(name).toLowerCase();
+				for (var k in this._responseHeaders) {
+					if (k.toLowerCase() === name) return this._responseHeaders[k];
+				}
+				return null;
+			};
+			window.XMLHttpRequest.prototype.overrideMimeType = function(mime) {
+				this._overrideMime = mime;
 			};
 			window.XMLHttpRequest.prototype.abort = function() {};
 
 			window.fetch = function(resource, options) {
 				options = options || {};
 				var method = options.method || 'GET';
-				var urlStr = typeof resource === 'string' ? resource : (resource.url || '');
+				var urlStr = typeof resource === 'string' ? resource : (resource && resource.url || '');
 				var headers = options.headers || {};
 				var body = options.body || '';
 				var respJSON = __besNetRequest(method, urlStr, JSON.stringify(headers), typeof body === 'string' ? body : '');
 				return new Promise(function(resolve, reject) {
 					try {
-						var r = JSON.parse(respJSON);
-						resolve({
-							ok: r.status >= 200 && r.status < 300,
-							status: r.status,
-							statusText: '',
-							headers: {
-								get: function(name) { return (r.headers && r.headers[name]) || null; },
-								has: function(name) { return !!(r.headers && r.headers[name]); }
-							},
-							text: function() { return Promise.resolve(r.body || ''); },
-							json: function() { return Promise.resolve(JSON.parse(r.body || '{}')); },
-							arrayBuffer: function() { return Promise.resolve(new ArrayBuffer(0)); },
-							clone: function() { return this; }
-						});
+						resolve(__besMakeResponse(JSON.parse(respJSON)));
 					} catch(e) { reject(e); }
 				});
 			};

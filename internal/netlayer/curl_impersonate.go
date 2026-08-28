@@ -153,6 +153,7 @@ func parseCurlOutput(raw []byte) (*Response, error) {
 		Status:     status,
 		Headers:    headers,
 		Body:       string(bodyBytes),
+		BodyB64:    b64Encode(bodyBytes),
 		Cookies:    cookies,
 		SetCookies: setCookies,
 	}, nil
@@ -217,7 +218,7 @@ func (c *CurlCffiClient) Request(method, url string, headers map[string]string, 
 	reqJSON, _ := json.Marshal(reqSpec)
 
 	pythonCode := fmt.Sprintf(`
-import json, sys
+import json, sys, base64
 from curl_cffi import requests
 req = json.loads(sys.stdin.read())
 try:
@@ -226,6 +227,7 @@ try:
         "status": resp.status_code,
         "headers": dict(resp.headers),
         "body": resp.text,
+        "body_b64": base64.b64encode(resp.content).decode("ascii"),
         "cookies": dict(resp.cookies),
     }
     print(json.dumps(result))
@@ -249,6 +251,7 @@ except Exception as e:
 		Status  int               `json:"status"`
 		Headers map[string]string `json:"headers"`
 		Body    string            `json:"body"`
+		BodyB64 string            `json:"body_b64"`
 		Cookies map[string]string `json:"cookies"`
 		Error   string            `json:"error"`
 	}
@@ -263,6 +266,7 @@ except Exception as e:
 		Status:  result.Status,
 		Headers: result.Headers,
 		Body:    result.Body,
+		BodyB64: result.BodyB64,
 		Cookies: result.Cookies,
 	}, nil
 }
@@ -366,7 +370,7 @@ func (tc *TLSClient) fallbackRequest(method, url string, headers map[string]stri
 			cookies[nv[0]] = nv[1]
 		}
 	}
-	return &Response{Status: resp.StatusCode, Headers: respHeaders, Body: string(respBody), Cookies: cookies, SetCookies: setCookies}, nil
+	return &Response{Status: resp.StatusCode, Headers: respHeaders, Body: string(respBody), BodyB64: b64Encode(respBody), Cookies: cookies, SetCookies: setCookies}, nil
 }
 
 // SetProxy configures proxy on all backends.

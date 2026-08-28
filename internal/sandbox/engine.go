@@ -92,7 +92,14 @@ type NetResponse struct {
 	Status  int
 	Headers map[string]string
 	Body    string
-	Cookies map[string]string
+	// BodyB64 is the raw response body base64-encoded (std encoding). Binary
+	// payloads must travel via this field: Body is a Go string that cannot
+	// hold non-UTF-8 bytes losslessly across the JSON serialization boundary
+	// into V8. When BodyB64 is non-empty, JS consumers decode it with
+	// __besB64ToUint8Array; Body is then derived (latin1 semantics: each byte
+	// maps to the same char code) so text()-style accessors keep working.
+	BodyB64    string
+	Cookies    map[string]string
 	// SetCookies holds raw Set-Cookie header values (one per line) so the
 	// sandbox can store them with full attributes, scoped to the response host.
 	SetCookies []string
