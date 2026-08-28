@@ -768,7 +768,8 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 	}
 	// Accept-Language derived from the fingerprint languages, so header and
 	// navigator.languages stay consistent (a common server-side check).
-	// Chrome format: "zh-CN,zh;q=0.9" — first language full, the rest q-decayed.
+	// Chrome format: "zh-CN,zh;q=0.9,en;q=0.8" — first language full, the
+	// rest q-decayed starting at 0.9.
 	acceptLanguage := ""
 	if p.fp != nil && len(p.fp.Languages) > 0 {
 		parts := make([]string, 0, len(p.fp.Languages))
@@ -776,7 +777,7 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 			if i == 0 {
 				parts = append(parts, lang)
 			} else {
-				parts = append(parts, fmt.Sprintf("%s;q=0.%d", lang, 9-i))
+				parts = append(parts, fmt.Sprintf("%s;q=0.%d", lang, 10-i))
 			}
 		}
 		acceptLanguage = strings.Join(parts, ",")
