@@ -1,16 +1,20 @@
 # browser-env-sandbox
 
-> 基于 V8 引擎的浏览器环境模拟平台 —— 程序化生成真实指纹、高性能 VM 执行、反检测沙箱
+> 基于 V8 引擎的浏览器环境模拟平台 —— 程序化生成自洽指纹、纯 V8 高性能执行、可编程浏览器环境
 
 ## 这是什么
 
-一个用 **Go + V8** 构建的浏览器环境模拟平台。不是补环境工具，是一个完整的反检测 VM 生态：
+一个用 **Go + V8** 构建的浏览器环境模拟平台。不是零散的补环境脚本，而是一套完整的浏览器环境模拟生态：
 
 - **指纹引擎** — 程序化生成自洽的浏览器指纹（navigator/canvas/WebGL/Audio/字体/时区），随机但内部一致
-- **V8 沙箱** — 纯 V8 Isolate 执行浏览器 JS，零 Node 痕迹，Isolate 池化高性能复用
-- **网络层** — 离线 replay + 在线转发双模式，session-unique 防关联
+- **V8 沙箱** — 纯 V8 Isolate 执行浏览器 JS，零宿主痕迹，Isolate 池化高性能复用
+- **网络层** — 离线 replay + 在线转发双模式，session-unique 环境隔离
 - **调试层** — 暴露 CDP 协议，真 Chrome DevTools 可直连调试
+- **AI Agent 集成** — 内置 MCP server（`bes mcp`），任何支持 MCP 的 AI 客户端可直接驱动沙箱
+- **Web 管理台** — Dashboard UI 查看会话、指纹与运行状态
 - **多语言桥接** — JSON-over-HTTP 服务 + Python/Go/Node SDK + CLI
+
+> **定位与用途**：浏览器环境模拟服务于自动化测试、前端环境兼容性验证与安全研究（如 WAF/风控规则的对抗性测试）。使用者需自行遵守目标网站服务条款与所在地法律法规。
 
 ## 为什么用 Go + V8
 
@@ -57,32 +61,55 @@
 
 ## 快速开始
 
-```bash
-# 编译
-go build -o bes ./cmd/bes
+> **平台要求**：v8go 的预编译 V8 静态库仅支持 **Linux (x86_64/arm64) 和 macOS**。Windows 原生编译不可用，请通过 Docker 或 WSL2 运行（见下方 Docker 部署）。
 
-# 生成指纹
-bes fingerprint --browser chrome --os windows --seed random
+```bash
+# 编译（CGO 必须开启，v8go 通过 CGO 调用 V8）
+CGO_ENABLED=1 go build -o bes ./cmd/bes
+CGO_ENABLED=1 go build -o bes-server ./cmd/bes-server
+
+# 运行自测套件（133 项浏览器环境检测）
+CGO_ENABLED=1 go build -o bes-selftest ./cmd/bes-selftest
+./bes-selftest
+
+# 生成指纹（seed 为 uint64，0 = 随机；相同 seed 输出相同指纹）
+./bes fingerprint --browser chrome --os windows --seed 42
 
 # 在沙箱中执行 JS
-bes run --script target.js --fingerprint auto
+./bes run --eval "navigator.userAgent" --browser chrome --os windows
+./bes run --script target.js --location "https://example.com/login"
 
-# 启动 HTTP API 服务
-bes-server --port 8080 --pool 8
+# 导出指纹到 JSON 文件
+./bes export-fp --output fp.json --seed 42
 
-# 离线 replay
-bes replay --recording session.json --fingerprint auto
+# 启动 HTTP API 服务器（供 SDK 调用）
+./bes-server --port 8080 --pool 8
+
+# Docker 部署（Linux 容器，任何宿主平台可用）
+docker-compose up -d    # API: 19821, CDP: 9223
 ```
 
+CLI 完整命令：`fingerprint` / `run` / `export-fp` / `selftest` / `mcp` / `version`。
+
 ## Python SDK
+
+Python SDK 通过 JSON-over-HTTP 连接 bes-server，先用 `./bes-server` 或 Docker 启动服务：
 
 ```python
 from bes import Sandbox
 
-sandbox = Sandbox(fingerprint="auto")  # 随机自洽指纹
-sandbox.eval("navigator.userAgent")
-sandbox.load_script("target.js")
-result = sandbox.call("sign", params)
+# 连接 bes-server 并创建沙箱 session（browser/os/seed/location 均可指定）
+sandbox = Sandbox(server_addr="localhost:8080", browser="chrome", os="windows")
+sandbox.eval("navigator.userAgent")                 # → "Mozilla/5.0 ... Chrome/1xx ..."
+sandbox.load_script("target.js")                    # 加载并执行脚本
+result = sandbox.call("myGlobalFn", "arg1", "arg2") # 调用沙箱内的全局函数
+sandbox.fingerprint                                 # 完整指纹 dict
+sandbox.set_cookie("k", "v")                        # document.cookie 读写
+sandbox.close()
+
+# Context manager 自动释放
+with Sandbox() as s:
+    print(s.eval("navigator.platform"))
 ```
 
 ## 核心特性
@@ -104,11 +131,20 @@ result = sandbox.call("sign", params)
 
 ### Session-Unique
 
-每个会话独立：TLS 指纹 + cookie jar + 代理 IP + 指纹 + UA。多账号操作时各 session 之间零关联。
+每个会话独立：TLS 指纹 + cookie jar + 代理 IP + 指纹 + UA。多测试场景并行时各 session 之间完全隔离。
 
 ### 离线 Replay
 
-录制真实浏览器请求序列 → 离线重放给沙箱。沙箱内的 XHR/fetch 不发真请求，而是从录制中取响应。用于反复调试签名算法。
+录制真实浏览器请求序列 → 离线重放给沙箱。沙箱内的 XHR/fetch 不发真请求，而是从录制中取响应。用于反复调试 JS 逻辑而不产生真实流量。
+
+### MCP（AI Agent 集成）
+
+沙箱内置 MCP server（stdio JSON-RPC），任何支持 Model Context Protocol 的 AI 客户端（Claude Desktop、Cursor 等）可直接创建 session、执行 JS、读取指纹：
+
+```bash
+# 启动 MCP server（stdio 模式，接入你的 AI 客户端配置）
+./bes mcp
+```
 
 ## 开发路线图
 
