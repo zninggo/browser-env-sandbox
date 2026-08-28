@@ -86,6 +86,10 @@ type createSessionRequest struct {
 	Proxy     string            `json:"proxy,omitempty"`
 	NetMode   string            `json:"net_mode,omitempty"`
 	Recording string            `json:"recording,omitempty"`
+	Referer   string            `json:"referer,omitempty"`   // session-level default Referer for netlayer
+	Origin    string            `json:"origin,omitempty"`    // session-level default Origin for netlayer
+	UserAgent string            `json:"user_agent,omitempty"` // session-level default UA (empty = fingerprint UA)
+	ExtraHeaders map[string]string `json:"extra_headers,omitempty"` // session-level extra headers
 	Preload   []string          `json:"preload,omitempty"` // script file paths to load on session creation
 	Init      string            `json:"init,omitempty"`    // JS code to execute after preload
 }
@@ -198,15 +202,19 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts := api.SessionOptions{
-		Seed:      req.Seed,
-		Browser:   req.Browser,
-		OS:        req.OS,
-		Timezone:  req.Timezone,
-		Location:  req.Location,
-		Cookies:   req.Cookies,
-		Proxy:     req.Proxy,
-		NetMode:   req.NetMode,
-		Recording: req.Recording,
+		Seed:         req.Seed,
+		Browser:      req.Browser,
+		OS:           req.OS,
+		Timezone:     req.Timezone,
+		Location:     req.Location,
+		Cookies:      req.Cookies,
+		Proxy:        req.Proxy,
+		NetMode:      req.NetMode,
+		Recording:    req.Recording,
+		Referer:      req.Referer,
+		Origin:       req.Origin,
+		UserAgent:    req.UserAgent,
+		ExtraHeaders: req.ExtraHeaders,
 	}
 	id, fp, err := s.svc.CreateSession(opts)
 	if err != nil {

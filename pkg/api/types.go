@@ -83,4 +83,14 @@ type SessionOptions struct {
 	Proxy      string  `json:"proxy,omitempty"`
 	NetMode    string  `json:"net_mode"`             // "replay" or "live"
 	Recording  string  `json:"recording,omitempty"`  // path to recording file for replay
+
+	// Session-level default request headers for netlayer (live mode).
+	// Referer/Origin are forbidden header names in the fetch spec, so they
+	// can only be set here (Go side) — sandbox JS cannot override them via
+	// fetch/XHR options. Explicit values override the browser-default
+	// derivation (full URL same-origin / origin cross-origin).
+	Referer      string            `json:"referer,omitempty"`
+	Origin       string            `json:"origin,omitempty"`
+	UserAgent    string            `json:"user_agent,omitempty"`      // empty = session fingerprint UA
+	ExtraHeaders map[string]string `json:"extra_headers,omitempty"`   // appended after Chrome's canonical order
 }

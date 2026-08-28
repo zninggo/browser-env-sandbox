@@ -160,6 +160,7 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 		cookieStore: cookieStore,
 		timerMgr:    timerMgr,
 		netHandler:  netHandler,
+		opts:        opts,
 	}
 	postBuilder.Build()
 
