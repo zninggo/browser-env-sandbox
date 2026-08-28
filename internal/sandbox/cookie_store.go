@@ -115,12 +115,18 @@ func (cs *CookieStore) SetRawForHost(raw, host string) bool {
 
 // SetRaw parses a raw cookie string (as written to document.cookie).
 // e.g. "name=value; path=/; domain=.example.com; secure; samesite=lax"
-// Without a request host, a Domain attribute is kept verbatim and the cookie
-// is not host-only.
+// The Domain attribute is normalized (leading dot stripped) so that later
+// CookieHeaderFor domain matching works consistently with SetRawForHost.
 func (cs *CookieStore) SetRaw(raw string) {
 	cookie := parseRawCookie(raw)
 	if cookie == nil {
 		return
+	}
+	if cookie.Domain != "" {
+		cookie.Domain = strings.ToLower(strings.TrimPrefix(cookie.Domain, "."))
+		if cookie.Domain == "" {
+			cookie.Domain = ""
+		}
 	}
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -232,7 +238,10 @@ func (cs *CookieStore) ApplySetCookie(setCookieHeaders []string, host string) {
 
 // domainMatch implements RFC 6265 §5.1.3: host equals domain, or host ends
 // with domain and the preceding char is a dot (and host is not an IP).
+// Tolerates a leading dot in domain (cookie attribute form).
 func domainMatch(host, domain string) bool {
+	host = strings.ToLower(host)
+	domain = strings.ToLower(strings.TrimPrefix(domain, "."))
 	if host == domain {
 		return true
 	}
