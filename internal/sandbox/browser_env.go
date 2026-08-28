@@ -691,6 +691,24 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 	iso := p.iso
 	handler := p.netHandler
 	cookies := p.cookieStore
+	location := p.location
+	userAgent := ""
+	if p.fp != nil {
+		if ua, ok := p.fp.Navigator["userAgent"].(string); ok {
+			userAgent = ua
+		}
+	}
+	// Default referer derived from the session location, as a browser would
+	// send for a subresource request: full URL same-origin, origin cross-origin
+	// (strict-origin-when-cross-origin). Empty when no valid location.
+	defaultRefererFull, defaultRefererOrigin := "", ""
+	if u, err := url.Parse(location); err == nil && u.Host != "" {
+		defaultRefererFull = u.Scheme + "://" + u.Host + u.Path
+		if u.RawQuery != "" {
+			defaultRefererFull += "?" + u.RawQuery
+		}
+		defaultRefererOrigin = u.Scheme + "://" + u.Host + "/"
+	}
 
 	// Go callback: __besNetRequest(method, url, headersJSON, body) → responseJSON
 	callback := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
@@ -716,14 +734,47 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 			headers = make(map[string]string)
 		}
 
-		// Inject cookies from the sandbox cookie store
-		cookieStr := cookies.String()
-		if cookieStr != "" {
-			if headers == nil {
-				headers = make(map[string]string)
+		// Resolve request URL parts for cookie scoping and referer policy.
+		u, err := url.Parse(urlStr)
+		if err != nil || u.Host == "" {
+			u = nil
+		}
+
+		// Inject default headers. Manually set headers always win.
+		if u != nil {
+			scheme := strings.ToLower(u.Scheme)
+			reqPath := u.Path
+			if reqPath == "" {
+				reqPath = "/"
 			}
-			if _, hasCookie := headers["Cookie"]; !hasCookie {
-				headers["Cookie"] = cookieStr
+
+			// Cookies per RFC 6265 §5.4, scoped to this request's
+			// scheme/host/path (domain match, path match, secure).
+			if _, hasCookie := headerLookup(headers, "Cookie"); !hasCookie {
+				if cookieStr := cookies.CookieHeaderFor(scheme, u.Hostname(), reqPath); cookieStr != "" {
+					headers = setHeaderAbsent(headers, "Cookie", cookieStr)
+				}
+			}
+
+			// Referer: full URL same-origin, origin cross-origin
+			// (strict-origin-when-cross-origin).
+			if _, hasReferer := headerLookup(headers, "Referer"); !hasReferer && defaultRefererFull != "" {
+				refOrigin := ""
+				if lu, lerr := url.Parse(location); lerr == nil {
+					refOrigin = strings.ToLower(lu.Scheme) + "://" + strings.ToLower(lu.Host)
+				}
+				reqOrigin := scheme + "://" + strings.ToLower(u.Host)
+				if refOrigin != "" && refOrigin != reqOrigin {
+					headers = setHeaderAbsent(headers, "Referer", defaultRefererOrigin)
+				} else {
+					headers = setHeaderAbsent(headers, "Referer", defaultRefererFull)
+				}
+			}
+
+			// User-Agent: from the session fingerprint (same string as
+			// navigator.userAgent), so TLS/UA/server-side checks stay aligned.
+			if _, hasUA := headerLookup(headers, "User-Agent"); !hasUA && userAgent != "" {
+				headers = setHeaderAbsent(headers, "User-Agent", userAgent)
 			}
 		}
 
@@ -738,8 +789,15 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 			return v
 		}
 
-		// Update cookie store from response Set-Cookie
-		if resp.Cookies != nil {
+		// Update cookie store from response Set-Cookie lines, scoped to the
+		// response URL's host (host-only vs domain attribute per RFC 6265 §5.3).
+		respHost := ""
+		if u != nil {
+			respHost = u.Hostname()
+		}
+		if len(resp.SetCookies) > 0 {
+			cookies.ApplySetCookie(resp.SetCookies, respHost)
+		} else if resp.Cookies != nil {
 			for k, v := range resp.Cookies {
 				cookies.Set(k, v, "/", "")
 			}
@@ -855,4 +913,27 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 		})();
 	`
 	p.ctx.RunScript(realJS, "fetch-xhr.js")
+}
+
+// headerLookup does a case-insensitive lookup of a header in a map whose keys
+// may be in any case (JS callers usually send canonical names, but be lenient).
+func headerLookup(headers map[string]string, name string) (string, bool) {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// setHeaderAbsent removes any existing entry equal to name (any case) and sets
+// name=value with the given casing.
+func setHeaderAbsent(headers map[string]string, name, value string) map[string]string {
+	for k := range headers {
+		if strings.EqualFold(k, name) {
+			delete(headers, k)
+		}
+	}
+	headers[name] = value
+	return headers
 }

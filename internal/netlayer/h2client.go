@@ -177,6 +177,7 @@ func (c *UTLSClient) requestH2(ctx context.Context, method, reqURL string, heade
 func readH2Response(framer *http2.Framer) (*Response, error) {
 	respHeaders := make(map[string]string)
 	cookies := make(map[string]string)
+	var setCookies []string
 	var respBody bytes.Buffer
 	var status int
 	streamEnded := false
@@ -215,7 +216,7 @@ func readH2Response(framer *http2.Framer) (*Response, error) {
 			if f.StreamID == 1 {
 				hdrBlock.Write(f.HeaderBlockFragment())
 				if f.HeadersEnded() {
-					if err := decodeH2Headers(hdrBlock.Bytes(), hdec, &respHeaders, &cookies, &status); err != nil {
+					if err := decodeH2Headers(hdrBlock.Bytes(), hdec, &respHeaders, &cookies, &setCookies, &status); err != nil {
 						return nil, err
 					}
 					hdrBlock.Reset()
@@ -228,7 +229,7 @@ func readH2Response(framer *http2.Framer) (*Response, error) {
 			if f.StreamID == 1 && hdrBlockActive {
 				hdrBlock.Write(f.HeaderBlockFragment())
 				if f.HeadersEnded() {
-					if err := decodeH2Headers(hdrBlock.Bytes(), hdec, &respHeaders, &cookies, &status); err != nil {
+					if err := decodeH2Headers(hdrBlock.Bytes(), hdec, &respHeaders, &cookies, &setCookies, &status); err != nil {
 						return nil, err
 					}
 					hdrBlock.Reset()
@@ -264,16 +265,17 @@ func readH2Response(framer *http2.Framer) (*Response, error) {
 	bodyStr := decompressH2Body(respHeaders["Content-Encoding"], respBody.Bytes())
 
 	return &Response{
-		Status:  status,
-		Headers: respHeaders,
-		Body:    bodyStr,
-		Cookies: cookies,
+		Status:     status,
+		Headers:    respHeaders,
+		Body:       bodyStr,
+		Cookies:    cookies,
+		SetCookies: setCookies,
 	}, nil
 }
 
 // decodeH2Headers decodes an hpack header block and populates response headers,
 // cookies, and status code. The :status pseudo-header sets the status.
-func decodeH2Headers(block []byte, hdec *hpack.Decoder, headers *map[string]string, cookies *map[string]string, status *int) error {
+func decodeH2Headers(block []byte, hdec *hpack.Decoder, headers *map[string]string, cookies *map[string]string, setCookies *[]string, status *int) error {
 	fields, err := hdec.DecodeFull(block)
 	if err != nil {
 		return fmt.Errorf("hpack decode: %w", err)
@@ -288,6 +290,7 @@ func decodeH2Headers(block []byte, hdec *hpack.Decoder, headers *map[string]stri
 		}
 		(*headers)[http2CanonicalHeaderKey(hf.Name)] = hf.Value
 		if strings.EqualFold(hf.Name, "set-cookie") {
+			*setCookies = append(*setCookies, hf.Value)
 			parts := strings.SplitN(hf.Value, ";", 2)
 			if len(parts) > 0 {
 				eqIdx := strings.Index(parts[0], "=")
