@@ -1,8 +1,12 @@
 # browser-env-sandbox Dockerfile
 # Multi-stage build: build the Go binary, then minimal runtime image
+#
+# NOTE: builder/runtime use Debian trixie (glibc 2.41+). The v8go v0.34
+# prebuilt V8 static libraries reference __isoc23_* symbols added in
+# glibc 2.38, which bookworm (2.36) does not provide.
 
 # ── Build stage ──
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.25-trixie AS builder
 
 WORKDIR /build
 
@@ -19,7 +23,7 @@ RUN CGO_ENABLED=1 go build -o /bes-server ./cmd/bes-server
 RUN CGO_ENABLED=1 go build -o /bes-selftest ./cmd/bes-selftest
 
 # ── Runtime stage ──
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # Install runtime deps
 # curl-impersonate: TLS fingerprint matching (optional, auto-detected)
@@ -33,7 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install curl_cffi if available (graceful failure if not)
-RUN pip3 install --no-cache-dir curl_cffi 2>/dev/null || true
+RUN pip3 install --no-cache-dir curl_cffi --break-system-packages 2>/dev/null || true
 
 # Copy binaries
 COPY --from=builder /bes /usr/local/bin/bes
