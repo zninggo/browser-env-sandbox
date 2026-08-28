@@ -90,7 +90,7 @@ func (c *UTLSClient) requestH2(ctx context.Context, method, reqURL string, heade
 	// 4. Coalesce all outgoing frames (preface + SETTINGS + WINDOW_UPDATE +
 	// HEADERS) into a single buffer, then write them in one conn.Write() call.
 	// Chrome sends these in 1-2 TLS records; Go's Framer writes each frame as
-	// a separate TLS record by default, which WAFs can detect.
+	// a separate TLS record by default, which server-side fingerprinting can detect.
 	var outBuf bytes.Buffer
 
 	// 4a. Client preface (magic string).

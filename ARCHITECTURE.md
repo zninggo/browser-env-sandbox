@@ -255,7 +255,7 @@ type NetworkSession struct {
 }
 ```
 
-多账号操作时，每个 session 的 TLS 指纹、cookie、IP、UA 全部不同，零关联。
+多测试场景并行时，每个 session 的 TLS 指纹、cookie、IP、UA 完全独立。
 
 ### 2.4 调试层 (debug)
 
