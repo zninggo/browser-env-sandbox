@@ -92,6 +92,9 @@ type NetResponse struct {
 	Headers map[string]string
 	Body    string
 	Cookies map[string]string
+	// SetCookies holds raw Set-Cookie header values (one per line) so the
+	// sandbox can store them with full attributes, scoped to the response host.
+	SetCookies []string
 }
 
 // CreateSession creates a new sandbox session with the given options.

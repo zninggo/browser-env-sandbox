@@ -10,10 +10,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zninggo/bes/internal/sandbox"
 )
 
 // Mode determines how network requests are handled.
@@ -26,9 +29,11 @@ const (
 
 // Handler processes XHR/fetch requests from the sandbox.
 type Handler struct {
-	mode       Mode
-	replay     *ReplayStore
-	cookieJar  map[string]string
+	mode   Mode
+	replay *ReplayStore
+	// cookieJar stores Set-Cookie responses keyed by (name, domain, path)
+	// with RFC 6265 semantics; scoped sending happens per-request.
+	cookieJar  *sandbox.CookieStore
 	proxy      string
 	tlsClient  *TLSClient
 	mu         sync.Mutex
@@ -58,7 +63,7 @@ type RecordedResponse struct {
 func New(mode Mode, replayFile, proxy, tlsTarget string) (*Handler, error) {
 	h := &Handler{
 		mode:      mode,
-		cookieJar: make(map[string]string),
+		cookieJar: sandbox.NewCookieStore(nil),
 		proxy:     proxy,
 		recording: true,
 	}
@@ -112,6 +117,8 @@ type Response struct {
 	Headers map[string]string
 	Body    string
 	Cookies map[string]string
+	// SetCookies holds raw Set-Cookie header values (one per line).
+	SetCookies []string
 }
 
 func (h *Handler) handleReplay(method, urlStr string) (*Response, error) {
@@ -130,19 +137,22 @@ func (h *Handler) handleReplay(method, urlStr string) (*Response, error) {
 }
 
 func (h *Handler) handleLive(method, urlStr string, headers map[string]string, body []byte) (*Response, error) {
-	// Inject cookies into headers
-	h.mu.Lock()
-	if len(h.cookieJar) > 0 {
-		cookieParts := make([]string, 0, len(h.cookieJar))
-		for k, v := range h.cookieJar {
-			cookieParts = append(cookieParts, k+"="+v)
+	// Inject cookies scoped to this request URL (RFC 6265 §5.4). A manually
+	// provided Cookie header wins over the jar.
+	if u, err := url.Parse(urlStr); err == nil && u.Hostname() != "" {
+		reqPath := u.Path
+		if reqPath == "" {
+			reqPath = "/"
 		}
-		if headers == nil {
-			headers = make(map[string]string)
+		if !hasHeader(headers, "Cookie") {
+			if cookieStr := h.cookieJar.CookieHeaderFor(strings.ToLower(u.Scheme), u.Hostname(), reqPath); cookieStr != "" {
+				if headers == nil {
+					headers = make(map[string]string)
+				}
+				headers["Cookie"] = cookieStr
+			}
 		}
-		headers["Cookie"] = strings.Join(cookieParts, "; ")
 	}
-	h.mu.Unlock()
 
 	// Use TLSClient (curl-impersonate → curl_cffi → standard HTTP fallback)
 	// for TLS fingerprint matching with the UA version.
@@ -152,13 +162,14 @@ func (h *Handler) handleLive(method, urlStr string, headers map[string]string, b
 			return nil, fmt.Errorf("TLS client request failed: %w", err)
 		}
 
-		// Update cookie jar from Set-Cookie
-		if resp.Cookies != nil {
-			h.mu.Lock()
-			for k, v := range resp.Cookies {
-				h.cookieJar[k] = v
+		// Update cookie jar from raw Set-Cookie lines, scoped to the
+		// response host.
+		if len(resp.SetCookies) > 0 {
+			if u, err := url.Parse(urlStr); err == nil {
+				for _, sc := range resp.SetCookies {
+					h.cookieJar.SetRawForHost(sc, u.Hostname())
+				}
 			}
-			h.mu.Unlock()
 		}
 
 		return resp, nil
@@ -189,16 +200,19 @@ func (h *Handler) handleLiveFallback(method, urlStr string, headers map[string]s
 		req.Header.Set(k, v)
 	}
 
-	// Inject cookies
-	h.mu.Lock()
-	if len(h.cookieJar) > 0 {
-		cookieParts := make([]string, 0, len(h.cookieJar))
-		for k, v := range h.cookieJar {
-			cookieParts = append(cookieParts, k+"="+v)
+	// Inject cookies scoped to this request URL. A manually provided Cookie
+	// header wins over the jar.
+	if u, perr := url.Parse(urlStr); perr == nil && u.Hostname() != "" {
+		reqPath := u.Path
+		if reqPath == "" {
+			reqPath = "/"
 		}
-		req.Header.Set("Cookie", strings.Join(cookieParts, "; "))
+		if !hasHeader(headers, "Cookie") {
+			if cookieStr := h.cookieJar.CookieHeaderFor(strings.ToLower(u.Scheme), u.Hostname(), reqPath); cookieStr != "" {
+				req.Header.Set("Cookie", cookieStr)
+			}
+		}
 	}
-	h.mu.Unlock()
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -211,16 +225,20 @@ func (h *Handler) handleLiveFallback(method, urlStr string, headers map[string]s
 		return nil, err
 	}
 
-	// Extract Set-Cookie headers
+	respHeaders := make(map[string]string)
 	cookies := make(map[string]string)
-	for _, c := range resp.Cookies() {
-		cookies[c.Name] = c.Value
+	var setCookies []string
+	for _, sc := range resp.Header["Set-Cookie"] {
+		setCookies = append(setCookies, sc)
+		nv := parseSetCookieNameValue(sc)
+		if nv[0] != "" {
+			cookies[nv[0]] = nv[1]
+		}
 		h.mu.Lock()
-		h.cookieJar[c.Name] = c.Value
+		h.cookieJar.SetRawForHost(sc, req.URL.Hostname())
 		h.mu.Unlock()
 	}
 
-	respHeaders := make(map[string]string)
 	for k, v := range resp.Header {
 		if len(v) > 0 {
 			respHeaders[k] = v[0]
@@ -228,29 +246,50 @@ func (h *Handler) handleLiveFallback(method, urlStr string, headers map[string]s
 	}
 
 	return &Response{
-		Status:  resp.StatusCode,
-		Headers: respHeaders,
-		Body:    string(respBody),
-		Cookies: cookies,
+		Status:     resp.StatusCode,
+		Headers:    respHeaders,
+		Body:       string(respBody),
+		Cookies:    cookies,
+		SetCookies: setCookies,
 	}, nil
 }
 
-// GetCookies returns the current cookie jar.
+// GetCookies returns the current cookie jar (name→value; last write wins per
+// name when the same name exists on multiple domains).
 func (h *Handler) GetCookies() map[string]string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	cp := make(map[string]string, len(h.cookieJar))
-	for k, v := range h.cookieJar {
-		cp[k] = v
-	}
-	return cp
+	return h.cookieJar.GetAll()
 }
 
-// SetCookie sets a cookie in the jar.
+// SetCookie sets a cookie in the jar (host-less, path "/").
 func (h *Handler) SetCookie(name, value string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.cookieJar[name] = value
+	h.cookieJar.Set(name, value, "/", "")
+}
+
+// hasHeader does a case-insensitive lookup in a header map.
+func hasHeader(headers map[string]string, name string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseSetCookieNameValue extracts "name=value" from a raw Set-Cookie value.
+// Returns nil when the pair cannot be parsed.
+func parseSetCookieNameValue(sc string) [2]string {
+	parts := strings.SplitN(sc, ";", 2)
+	if len(parts) == 0 {
+		return [2]string{}
+	}
+	eqIdx := strings.Index(parts[0], "=")
+	if eqIdx <= 0 {
+		return [2]string{}
+	}
+	return [2]string{
+		strings.TrimSpace(parts[0][:eqIdx]),
+		strings.TrimSpace(parts[0][eqIdx+1:]),
+	}
 }
 
 // TLSBackend returns which TLS backend is in use (for logging).

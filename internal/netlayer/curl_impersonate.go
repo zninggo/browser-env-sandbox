@@ -120,6 +120,7 @@ func parseCurlOutput(raw []byte) (*Response, error) {
 	// Parse headers
 	headers := make(map[string]string)
 	var cookies map[string]string
+	var setCookies []string
 	for _, line := range lines[1:] {
 		if line == "" {
 			continue
@@ -134,6 +135,7 @@ func parseCurlOutput(raw []byte) (*Response, error) {
 
 		// Extract Set-Cookie
 		if strings.EqualFold(key, "Set-Cookie") {
+			setCookies = append(setCookies, val)
 			if cookies == nil {
 				cookies = make(map[string]string)
 			}
@@ -148,10 +150,11 @@ func parseCurlOutput(raw []byte) (*Response, error) {
 	}
 
 	return &Response{
-		Status:  status,
-		Headers: headers,
-		Body:    string(bodyBytes),
-		Cookies: cookies,
+		Status:     status,
+		Headers:    headers,
+		Body:       string(bodyBytes),
+		Cookies:    cookies,
+		SetCookies: setCookies,
 	}, nil
 }
 
@@ -350,15 +353,20 @@ func (tc *TLSClient) fallbackRequest(method, url string, headers map[string]stri
 
 	respHeaders := make(map[string]string)
 	cookies := make(map[string]string)
+	var setCookies []string
 	for k, v := range resp.Header {
 		if len(v) > 0 {
 			respHeaders[k] = v[0]
 		}
 	}
-	for _, c := range resp.Cookies() {
-		cookies[c.Name] = c.Value
+	for _, sc := range resp.Header["Set-Cookie"] {
+		setCookies = append(setCookies, sc)
+		nv := parseSetCookieNameValue(sc)
+		if nv[1] != "" || nv[0] != "" {
+			cookies[nv[0]] = nv[1]
+		}
 	}
-	return &Response{Status: resp.StatusCode, Headers: respHeaders, Body: string(respBody), Cookies: cookies}, nil
+	return &Response{Status: resp.StatusCode, Headers: respHeaders, Body: string(respBody), Cookies: cookies, SetCookies: setCookies}, nil
 }
 
 // SetProxy configures proxy on all backends.

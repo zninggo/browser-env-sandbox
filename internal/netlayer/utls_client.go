@@ -204,6 +204,7 @@ func parseHTTP1Response(raw []byte) (*Response, error) {
 
 	headers := make(map[string]string)
 	cookies := make(map[string]string)
+	var setCookies []string
 	for _, line := range lines[1:] {
 		colonIdx := strings.Index(line, ":")
 		if colonIdx < 0 {
@@ -213,6 +214,7 @@ func parseHTTP1Response(raw []byte) (*Response, error) {
 		val := strings.TrimSpace(line[colonIdx+1:])
 		headers[key] = val
 		if strings.EqualFold(key, "Set-Cookie") {
+			setCookies = append(setCookies, val)
 			cookieParts := strings.SplitN(val, ";", 2)
 			if len(cookieParts) > 0 {
 				eqIdx := strings.Index(cookieParts[0], "=")
@@ -240,10 +242,11 @@ func parseHTTP1Response(raw []byte) (*Response, error) {
 	}
 
 	return &Response{
-		Status:  status,
-		Headers: headers,
-		Body:    body,
-		Cookies: cookies,
+		Status:     status,
+		Headers:    headers,
+		Body:       body,
+		Cookies:    cookies,
+		SetCookies: setCookies,
 	}, nil
 }
 

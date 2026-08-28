@@ -110,9 +110,10 @@ func (a *netHandlerAdapter) Request(method, urlStr string, headers map[string]st
 		return nil, err
 	}
 	return &sandbox.NetResponse{
-		Status:  resp.Status,
-		Headers: resp.Headers,
-		Body:    resp.Body,
-		Cookies: resp.Cookies,
+		Status:     resp.Status,
+		Headers:    resp.Headers,
+		Body:       resp.Body,
+		Cookies:    resp.Cookies,
+		SetCookies: resp.SetCookies,
 	}, nil
 }
