@@ -608,13 +608,20 @@ func (p *PostContextBuilder) injectComplexNavigator() {
 			conn["effectiveType"], conn["rtt"], conn["downlink"])
 	}
 
+	// navigator.language must equal languages[0] (browser invariant)
+	langFirst := "en"
+	if len(langs) > 0 {
+		langFirst = langs[0]
+	}
+
 	js := fmt.Sprintf(`
 		(function(){
+			Object.defineProperty(navigator, 'language', {value: %q, configurable: true, writable: true});
 			Object.defineProperty(navigator, 'languages', {value: %s, configurable: true, writable: true});
 			Object.defineProperty(navigator, 'userAgentData', {value: %s, configurable: true, writable: true});
 			Object.defineProperty(navigator, 'connection', {value: %s, configurable: true, writable: true});
 		})();
-	`, langArr, uadJSON, connJSON)
+	`, langFirst, langArr, uadJSON, connJSON)
 	p.ctx.RunScript(js, "nav-complex.js")
 }
 
