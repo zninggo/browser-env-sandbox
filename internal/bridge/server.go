@@ -80,6 +80,7 @@ type createSessionRequest struct {
 	Seed      uint64            `json:"seed,omitempty"`
 	Browser   string            `json:"browser,omitempty"`
 	OS        string            `json:"os,omitempty"`
+	Timezone  string            `json:"timezone,omitempty"` // pin tz+languages (e.g. match proxy geo)
 	Location  string            `json:"location,omitempty"`
 	Cookies   map[string]string `json:"cookies,omitempty"`
 	Proxy     string            `json:"proxy,omitempty"`
@@ -200,6 +201,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		Seed:      req.Seed,
 		Browser:   req.Browser,
 		OS:        req.OS,
+		Timezone:  req.Timezone,
 		Location:  req.Location,
 		Cookies:   req.Cookies,
 		Proxy:     req.Proxy,
