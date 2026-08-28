@@ -44,7 +44,7 @@ func main() {
 		{"navigator.userAgent exists", `navigator.userAgent`, "Mozilla/5.0"},
 		{"navigator.platform = Win32", `navigator.platform`, "Win32"},
 		{"navigator.webdriver = false", `String(navigator.webdriver)`, "false"},
-		{"navigator.language exists", `navigator.language`, "zh"},
+		{"navigator.language matches languages[0]", `String(navigator.language === navigator.languages[0])`, "true"},
 		{"navigator.languages is array", `Array.isArray(navigator.languages)`, "true"},
 		{"navigator.hardwareConcurrency > 0", `navigator.hardwareConcurrency > 0`, "true"},
 		{"navigator.cookieEnabled", `String(navigator.cookieEnabled)`, "true"},
