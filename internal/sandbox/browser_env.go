@@ -766,6 +766,21 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 			userAgent = ua
 		}
 	}
+	// Accept-Language derived from the fingerprint languages, so header and
+	// navigator.languages stay consistent (a common server-side check).
+	// Chrome format: "zh-CN,zh;q=0.9" — first language full, the rest q-decayed.
+	acceptLanguage := ""
+	if p.fp != nil && len(p.fp.Languages) > 0 {
+		parts := make([]string, 0, len(p.fp.Languages))
+		for i, lang := range p.fp.Languages {
+			if i == 0 {
+				parts = append(parts, lang)
+			} else {
+				parts = append(parts, fmt.Sprintf("%s;q=0.%d", lang, 9-i))
+			}
+		}
+		acceptLanguage = strings.Join(parts, ",")
+	}
 	// Default referer derived from the session location, as a browser would
 	// send for a subresource request: full URL same-origin, origin cross-origin
 	// (strict-origin-when-cross-origin). Empty when no valid location.
@@ -891,6 +906,14 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 				if ua != "" {
 					headers = setHeaderAbsent(headers, "User-Agent", ua)
 				}
+			}
+
+			// Accept-Language: derived from the fingerprint languages (same
+			// chain as navigator.languages), aligned with User-Agent so
+			// language-consistency checks pass. netlayer backends have their
+			// own hardcoded zh-CN fallback when this is absent.
+			if _, hasAL := headerLookup(headers, "Accept-Language"); !hasAL && acceptLanguage != "" {
+				headers = setHeaderAbsent(headers, "Accept-Language", acceptLanguage)
 			}
 
 			// Session-level extra headers: appended only when the request
