@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"rogchap.com/v8go"
+	"github.com/tommie/v8go"
 
 	"github.com/zninggo/bes/pkg/api"
 )
