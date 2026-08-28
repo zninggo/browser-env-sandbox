@@ -62,7 +62,7 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, host, port string) (net.Conn,
 
 	tlsConn := utls.UClient(conn, &utls.Config{
 		ServerName: host,
-	}, utls.HelloChrome_Auto)
+	}, utls.HelloChrome_131)
 
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		conn.Close()
@@ -93,15 +93,22 @@ func (c *UTLSClient) Request(method, reqURL string, headers map[string]string, b
 		}
 	}
 
-	// Create transport with utls dial.
+	// Create transport with utls dial + Chrome-aligned HTTP/2 SETTINGS.
 	// Since utls.UConn is not *crypto/tls.Conn, http.Transport won't enable
-	// HTTP/2 automatically. We use http2.Transport directly for h2 support,
-	// falling back to http.Transport (HTTP/1.1) if h2 fails.
+	// HTTP/2 automatically. We use http2.Transport directly for h2 support.
+	// The SETTINGS frame values below match what real Chrome sends, so the
+	// HTTP/2 fingerprint (Akamai-style) lines up with the TLS fingerprint.
 	transport := &http2.Transport{
 		AllowHTTP: true,
 		DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
 			return c.dialUTLS(ctx, host, port)
 		},
+		// Chrome's SETTINGS_HEADER_TABLE_SIZE (Chrome uses 65536, not the
+		// HTTP/2 spec default of 4096 that Go sends).
+		MaxDecoderHeaderTableSize: 65536,
+		MaxEncoderHeaderTableSize: 65536,
+		// Chrome's SETTINGS_MAX_HEADER_LIST_SIZE.
+		MaxHeaderListSize: 262144,
 	}
 
 	// Build request
