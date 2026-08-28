@@ -14,8 +14,8 @@ import (
 // CurlImpersonate integrates with curl-impersonate binary for TLS fingerprint matching.
 // It shells out to curl-impersonate wrapper scripts (e.g. curl_chrome116).
 type CurlImpersonate struct {
-	binaryPath string   // path to curl-impersonate wrapper script directory
-	target     string   // e.g. "chrome116"
+	binaryPath string // path to curl-impersonate wrapper script directory
+	target     string // e.g. "chrome116"
 	proxy      string
 	timeout    time.Duration
 }
@@ -54,8 +54,8 @@ func (c *CurlImpersonate) Request(method, url string, headers map[string]string,
 	args := []string{
 		url,
 		"-X", method,
-		"-s",  // silent
-		"-D", "-",  // dump headers to stdout
+		"-s",      // silent
+		"-D", "-", // dump headers to stdout
 		"--max-time", fmt.Sprintf("%d", int(c.timeout.Seconds())),
 	}
 
@@ -200,12 +200,12 @@ func (c *CurlCffiClient) SetProxy(proxyURL string) {
 func (c *CurlCffiClient) Request(method, url string, headers map[string]string, body []byte) (*Response, error) {
 	// Build JSON request spec
 	reqSpec := map[string]interface{}{
-		"method":           method,
-		"url":              url,
-		"headers":          headers,
-		"impersonate":      c.target,
-		"allow_redirects":  false,
-		"timeout":          int(c.timeout.Seconds()),
+		"method":          method,
+		"url":             url,
+		"headers":         headers,
+		"impersonate":     c.target,
+		"allow_redirects": false,
+		"timeout":         int(c.timeout.Seconds()),
 	}
 	if len(body) > 0 {
 		reqSpec["data"] = string(body)

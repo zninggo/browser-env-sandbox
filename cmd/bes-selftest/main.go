@@ -263,6 +263,75 @@ func main() {
 		passed++
 	}
 
+	// Network header consistency test: the fingerprint must drive outbound
+	// request headers end-to-end (navigator.languages → Accept-Language,
+	// navigator.userAgent → User-Agent). Uses a mock NetHandler to capture
+	// what actually goes on the wire — JS-level checks cannot see this.
+	fmt.Println("\n── Network header consistency ──")
+	captured := make(chan map[string]string, 1)
+	eng.SetNetHandlerFactory(func(opts api.SessionOptions, cs *sandbox.CookieStore) sandbox.NetHandler {
+		return captureHandler{capture: captured}
+	})
+	netSess, err := eng.CreateSession(api.SessionOptions{
+		Browser:  "chrome",
+		OS:       "windows",
+		Location: "https://example.com/login",
+	})
+	if err != nil {
+		fmt.Printf("  ❌ network session error: %v\n", err)
+		failed++
+	} else {
+		_, evalErr := netSess.Eval(`fetch('https://example.com/api/data').then(function(){return 'done'})`)
+		if evalErr != nil {
+			fmt.Printf("  ❌ fetch eval error: %v\n", evalErr)
+			failed++
+		} else {
+			select {
+			case headers := <-captured:
+				fp := netSess.GetFingerprint()
+				wantLangs := fp.Languages
+				// Expected Chrome format: first language bare, the rest
+				// q-decayed starting at 0.9 (zh-CN,zh;q=0.9,en;q=0.8).
+				expectParts := make([]string, 0, len(wantLangs))
+				for i, l := range wantLangs {
+					if i == 0 {
+						expectParts = append(expectParts, l)
+					} else {
+						expectParts = append(expectParts, fmt.Sprintf("%s;q=0.%d", l, 10-i))
+					}
+				}
+				expectAL := strings.Join(expectParts, ",")
+				gotAL, hasAL := lookupHeader(headers, "Accept-Language")
+				gotUA, hasUA := lookupHeader(headers, "User-Agent")
+				wantUA, _ := fp.Navigator["userAgent"].(string)
+				alOK := hasAL && gotAL == expectAL
+				uaOK := hasUA && gotUA == wantUA
+				if alOK && uaOK {
+					passed++
+					fmt.Printf("  ✅ Accept-Language matches navigator.languages → %s\n", truncate(gotAL, 60))
+					fmt.Printf("  ✅ User-Agent matches navigator.userAgent\n")
+					passed++
+				} else {
+					if !alOK {
+						failed++
+						failures = append(failures, fmt.Sprintf("  ❌ Accept-Language: got '%v', want '%s'", headers, expectAL))
+						fmt.Printf("  ❌ Accept-Language mismatch → got '%s' (has=%v), want '%s'\n", gotAL, hasAL, expectAL)
+					}
+					if !uaOK {
+						failed++
+						failures = append(failures, fmt.Sprintf("  ❌ User-Agent: got '%s', want '%s'", gotUA, wantUA))
+						fmt.Printf("  ❌ User-Agent mismatch → got '%s' (has=%v), want '%s'\n", gotUA, hasUA, wantUA)
+					}
+				}
+			case <-time.After(5 * time.Second):
+				failed++
+				failures = append(failures, "  ❌ network capture timeout — fetch never reached NetHandler")
+				fmt.Printf("  ❌ capture timeout — fetch never reached NetHandler\n")
+			}
+		}
+		netSess.Dispose()
+	}
+
 	// Summary
 	fmt.Printf("\n══════════════════════════════════\n")
 	fmt.Printf("  Results: %d passed, %d failed, %d total\n", passed, failed, passed+failed)
@@ -284,4 +353,32 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// captureHandler is a mock NetHandler that records the headers of the first
+// request it sees, so the self-test can assert what would go on the wire.
+type captureHandler struct {
+	capture chan map[string]string
+}
+
+func (h captureHandler) Request(method, url string, headers map[string]string, body []byte) (*sandbox.NetResponse, error) {
+	select {
+	case h.capture <- headers:
+	default:
+	}
+	return &sandbox.NetResponse{
+		Status:  200,
+		Headers: map[string]string{"Content-Type": "application/json"},
+		Body:    `{"ok":true}`,
+	}, nil
+}
+
+// lookupHeader does a case-insensitive header lookup.
+func lookupHeader(headers map[string]string, name string) (string, bool) {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v, true
+		}
+	}
+	return "", false
 }
