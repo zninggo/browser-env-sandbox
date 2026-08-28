@@ -412,6 +412,7 @@ type PostContextBuilder struct {
 	cookieStore *CookieStore
 	timerMgr    *TimerManager
 	netHandler  NetHandler
+	opts        api.SessionOptions
 }
 
 func (p *PostContextBuilder) Build() {
@@ -777,6 +778,14 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 		defaultRefererOrigin = u.Scheme + "://" + u.Host + "/"
 	}
 
+	// Session-level defaults from SessionOptions (bridge /api/session fields).
+	// Precedence: request-level _bes_* override > explicit session field >
+	// browser-default derivation (full URL same-origin / origin cross-origin).
+	sessReferer := p.opts.Referer
+	sessOrigin := p.opts.Origin
+	sessUA := p.opts.UserAgent
+	sessExtra := p.opts.ExtraHeaders
+
 	// Go callback: __besNetRequest(method, url, headersJSON, body) → responseJSON
 	callback := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
 		args := info.Args()
@@ -807,7 +816,16 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 			u = nil
 		}
 
-		// Inject default headers. Manually set headers always win.
+		// Request-level overrides via reserved _bes_* headers (stripped before
+		// sending — the target server never sees them). These let a single
+		// eval'd request override the session-level defaults without touching
+		// subsequent requests.
+		reqReferer := popReservedHeader(headers, "_bes_referer")
+		reqOrigin := popReservedHeader(headers, "_bes_origin")
+		reqUA := popReservedHeader(headers, "_bes_user_agent")
+
+		// Inject default headers. Precedence: manually set (real) headers >
+		// request-level _bes_* override > session-level field > derivation.
 		if u != nil {
 			scheme := strings.ToLower(u.Scheme)
 			reqPath := u.Path
@@ -823,25 +841,64 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 				}
 			}
 
-			// Referer: full URL same-origin, origin cross-origin
-			// (strict-origin-when-cross-origin).
-			if _, hasReferer := headerLookup(headers, "Referer"); !hasReferer && defaultRefererFull != "" {
-				refOrigin := ""
-				if lu, lerr := url.Parse(location); lerr == nil {
-					refOrigin = strings.ToLower(lu.Scheme) + "://" + strings.ToLower(lu.Host)
+			// Referer: request override > session field > browser-default
+			// (full URL same-origin, origin cross-origin —
+			// strict-origin-when-cross-origin).
+			if _, hasReferer := headerLookup(headers, "Referer"); !hasReferer {
+				ref := reqReferer
+				if ref == "" {
+					ref = sessReferer
 				}
-				reqOrigin := scheme + "://" + strings.ToLower(u.Host)
-				if refOrigin != "" && refOrigin != reqOrigin {
-					headers = setHeaderAbsent(headers, "Referer", defaultRefererOrigin)
-				} else {
-					headers = setHeaderAbsent(headers, "Referer", defaultRefererFull)
+				if ref == "" && defaultRefererFull != "" {
+					refOrigin := ""
+					if lu, lerr := url.Parse(location); lerr == nil {
+						refOrigin = strings.ToLower(lu.Scheme) + "://" + strings.ToLower(lu.Host)
+					}
+					reqOriginURL := scheme + "://" + strings.ToLower(u.Host)
+					if refOrigin != "" && refOrigin != reqOriginURL {
+						ref = defaultRefererOrigin
+					} else {
+						ref = defaultRefererFull
+					}
+				}
+				if ref != "" {
+					headers = setHeaderAbsent(headers, "Referer", ref)
 				}
 			}
 
-			// User-Agent: from the session fingerprint (same string as
-			// navigator.userAgent), so TLS/UA/server-side checks stay aligned.
-			if _, hasUA := headerLookup(headers, "User-Agent"); !hasUA && userAgent != "" {
-				headers = setHeaderAbsent(headers, "User-Agent", userAgent)
+			// Origin: request override > session field (no browser-default —
+			// Chrome only sends Origin on CORS/non-GET, callers opt in).
+			if _, hasOrigin := headerLookup(headers, "Origin"); !hasOrigin {
+				origin := reqOrigin
+				if origin == "" {
+					origin = sessOrigin
+				}
+				if origin != "" {
+					headers = setHeaderAbsent(headers, "Origin", origin)
+				}
+			}
+
+			// User-Agent: request override > session field > fingerprint UA,
+			// so TLS/UA/server-side checks stay aligned.
+			if _, hasUA := headerLookup(headers, "User-Agent"); !hasUA {
+				ua := reqUA
+				if ua == "" {
+					ua = sessUA
+				}
+				if ua == "" {
+					ua = userAgent
+				}
+				if ua != "" {
+					headers = setHeaderAbsent(headers, "User-Agent", ua)
+				}
+			}
+
+			// Session-level extra headers: appended only when the request
+			// does not already carry a value (manually set headers win).
+			for k, v := range sessExtra {
+				if _, has := headerLookup(headers, k); !has {
+					headers[k] = v
+				}
 			}
 		}
 
@@ -1003,4 +1060,19 @@ func setHeaderAbsent(headers map[string]string, name, value string) map[string]s
 	}
 	headers[name] = value
 	return headers
+}
+
+// popReservedHeader removes the reserved header (any case) from the map and
+// returns its value ("" when absent). Used for request-level _bes_* overrides
+// which must never reach the wire.
+func popReservedHeader(headers map[string]string, name string) string {
+	v, ok := headerLookup(headers, name)
+	if ok {
+		for k := range headers {
+			if strings.EqualFold(k, name) {
+				delete(headers, k)
+			}
+		}
+	}
+	return v
 }
