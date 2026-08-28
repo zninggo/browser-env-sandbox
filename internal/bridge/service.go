@@ -214,12 +214,13 @@ func (s *Service) ListSessions() []SessionSummary {
 }
 
 // Eval executes JavaScript in a session and returns the stringified result.
+// Promise results are awaited (timers + microtasks drained) before returning.
 func (s *Service) Eval(id, code string) (string, error) {
 	e, ok := s.getEntry(id)
 	if !ok {
 		return "", fmt.Errorf("session not found: %s", id)
 	}
-	return e.sess.Eval(code)
+	return e.sess.EvalAwait(code, 30*time.Second)
 }
 
 // LoadScript loads and executes a named script in a session.

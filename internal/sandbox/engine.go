@@ -178,7 +178,18 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 }
 
 // Eval executes JavaScript in the sandbox.
+// If the result is a Promise, it awaits it (flushing timers/microtasks)
+// and returns the resolved value instead of "[object Promise]".
 func (s *Session) Eval(code string) (string, error) {
+	return s.EvalAwait(code, 30*time.Second)
+}
+
+// EvalAwait executes JavaScript; a Promise result is awaited by draining
+// the timer loop + microtask checkpoints until it settles or the timeout
+// elapses. Non-Promise results return immediately.
+// (EvalWithTimeout in advanced.go is the different primitive: it terminates
+// long-running *synchronous* execution.)
+func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -191,6 +202,30 @@ func (s *Session) Eval(code string) (string, error) {
 	}
 	if val == nil {
 		return "", nil
+	}
+
+	// Await Promise results: poll pending timers + microtask checkpoint so
+	// setTimeout-driven resolution actually runs, up to the timeout.
+	if val.IsPromise() {
+		p, err := val.AsPromise()
+		if err != nil {
+			return "", err
+		}
+		deadline := time.Now().Add(timeout)
+		for {
+			s.timers.Flush(100 * time.Millisecond)
+			s.ctx.PerformMicrotaskCheckpoint()
+			switch p.State() {
+			case v8go.Fulfilled:
+				return p.Result().String(), nil
+			case v8go.Rejected:
+				return "", fmt.Errorf("promise rejected: %s", p.Result().String())
+			}
+			if time.Now().After(deadline) {
+				return "", fmt.Errorf("promise pending past %v timeout", timeout)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 	return val.String(), nil
 }
