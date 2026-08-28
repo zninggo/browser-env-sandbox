@@ -4,6 +4,7 @@ services:
   bes-server:
     build: .
     container_name: bes-server
+    command: ["--port", "19821", "--cdp-port", "9223"]
     ports:
       - "127.0.0.1:19821:19821"   # JSON-RPC API (reverse-proxied via traefik)
       - "127.0.0.1:9223:9223"     # CDP debug
