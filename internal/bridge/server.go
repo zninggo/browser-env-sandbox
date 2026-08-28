@@ -50,6 +50,7 @@ func NewServer(addr string, svc *Service, authToken string) *Server {
 	mux.HandleFunc("POST /api/session/{id}/script", s.auth(s.loadScript))
 	mux.HandleFunc("POST /api/session/{id}/call", s.auth(s.callFunction))
 	mux.HandleFunc("GET /api/session/{id}/fingerprint", s.auth(s.fingerprint))
+	mux.HandleFunc("POST /api/session/{id}/swap-fingerprint", s.auth(s.swapFingerprint))
 	mux.HandleFunc("GET /api/session/{id}/cookies", s.auth(s.getCookies))
 	mux.HandleFunc("POST /api/session/{id}/cookies", s.auth(s.setCookie))
 	mux.HandleFunc("DELETE /api/session/{id}", s.auth(s.closeSession))
@@ -296,6 +297,31 @@ func (s *Server) fingerprint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, fp)
+}
+
+func (s *Server) swapFingerprint(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req createSessionRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	opts := api.SessionOptions{
+		Seed:      req.Seed,
+		Browser:   req.Browser,
+		OS:        req.OS,
+		Timezone:  req.Timezone,
+		Location:  req.Location,
+		Proxy:     req.Proxy,
+		NetMode:   req.NetMode,
+		Recording: req.Recording,
+	}
+	fp, err := s.svc.SwapFingerprint(id, opts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, createSessionResponse{SessionID: id, Fingerprint: fp})
 }
 
 func (s *Server) getCookies(w http.ResponseWriter, r *http.Request) {

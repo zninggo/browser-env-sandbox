@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 
@@ -724,6 +725,7 @@ func (p *PostContextBuilder) injectFetchXHR() {
 	// Stub implementation (no network — for pure JS execution / signing)
 	stubJS := `
 		(function(){
+			window.__besPendingXHR = 0;
 			window.fetch = function(resource, options) {
 				var mockResp = {
 					ok: true, status: 200,
@@ -984,6 +986,165 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 	fnVal := fn.GetFunction(p.ctx)
 	p.global.Set("__besNetRequest", fnVal)
 
+	// Async variant: __besNetRequestAsync(method, url, headersJSON, body, jsCallback)
+	// Runs the HTTP request in a goroutine, then invokes jsCallback(resultJSON)
+	// via setTimeout(0) so it lands on the V8 event loop. This is the async
+	// XHR/fetch path — the sync __besNetRequest above stays for callers that
+	// need synchronous results (legacy sync XHR, signing-only flows).
+	asyncCallback := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		args := info.Args()
+		if len(args) < 5 {
+			return nil
+		}
+		method := args[0].String()
+		urlStr := args[1].String()
+		headersJSON := args[2].String()
+		body := args[3].String()
+		// args[4] is the JS callback, but we don't call it directly from Go
+		// (V8 isn't thread-safe). Instead we deliver results back into V8 via
+		// setTimeout(0) + RunScript, which calls __besDeliverXHR-equivalent.
+		ctx := info.Context()
+
+		go func() {
+			// Reuse the same header-resolution logic by calling the sync
+			// callback's internals. We rebuild the headers map here the same
+			// way the sync path does (the sync callback is a closure over the
+			// same vars). To avoid duplicating ~100 lines, we invoke the sync
+			// callback closure directly by calling it with the same args and
+			// capturing its return — but the closure is not accessible from
+			// here. Instead we call __besNetRequest via a synthetic info.
+			// Simplest correct approach: re-run the resolution inline.
+			var headers map[string]string
+			if err := json.Unmarshal([]byte(headersJSON), &headers); err != nil {
+				headers = make(map[string]string)
+			}
+			// Apply the same default-header injection as the sync path.
+			u, perr := url.Parse(urlStr)
+			if perr == nil && u.Host != "" {
+				scheme := strings.ToLower(u.Scheme)
+				reqPath := u.Path
+				if reqPath == "" {
+					reqPath = "/"
+				}
+				reqReferer := popReservedHeader(headers, "_bes_referer")
+				reqOrigin := popReservedHeader(headers, "_bes_origin")
+				reqUA := popReservedHeader(headers, "_bes_user_agent")
+				if _, hasCookie := headerLookup(headers, "Cookie"); !hasCookie {
+					if cookieStr := cookies.CookieHeaderFor(scheme, u.Hostname(), reqPath); cookieStr != "" {
+						headers = setHeaderAbsent(headers, "Cookie", cookieStr)
+					}
+				}
+				if _, hasReferer := headerLookup(headers, "Referer"); !hasReferer {
+					ref := reqReferer
+					if ref == "" {
+						ref = sessReferer
+					}
+					if ref == "" && defaultRefererFull != "" {
+						refOrigin := ""
+						if lu, lerr := url.Parse(location); lerr == nil {
+							refOrigin = strings.ToLower(lu.Scheme) + "://" + strings.ToLower(lu.Host)
+						}
+						reqOriginURL := scheme + "://" + strings.ToLower(u.Host)
+						if refOrigin != "" && refOrigin != reqOriginURL {
+							ref = defaultRefererOrigin
+						} else {
+							ref = defaultRefererFull
+						}
+					}
+					if ref != "" {
+						headers = setHeaderAbsent(headers, "Referer", ref)
+					}
+				}
+				if _, hasOrigin := headerLookup(headers, "Origin"); !hasOrigin {
+					origin := reqOrigin
+					if origin == "" {
+						origin = sessOrigin
+					}
+					if origin != "" {
+						headers = setHeaderAbsent(headers, "Origin", origin)
+					}
+				}
+				if _, hasUA := headerLookup(headers, "User-Agent"); !hasUA {
+					ua := reqUA
+					if ua == "" {
+						ua = sessUA
+					}
+					if ua == "" {
+						ua = userAgent
+					}
+					if ua != "" {
+						headers = setHeaderAbsent(headers, "User-Agent", ua)
+					}
+				}
+				if _, hasAL := headerLookup(headers, "Accept-Language"); !hasAL && acceptLanguage != "" {
+					headers = setHeaderAbsent(headers, "Accept-Language", acceptLanguage)
+				}
+				for k, v := range sessExtra {
+					if _, has := headerLookup(headers, k); !has {
+						headers[k] = v
+					}
+				}
+			}
+
+			resp, err := handler.Request(method, urlStr, headers, []byte(body))
+			var resultJSON string
+			if err != nil {
+				resultJSON = `{"status":0,"body":"","headers":{},"error":` + jsonString(err.Error()) + `}`
+			} else {
+				if u != nil {
+					respHost := u.Hostname()
+					if len(resp.SetCookies) > 0 {
+						cookies.ApplySetCookie(resp.SetCookies, respHost)
+					} else if resp.Cookies != nil {
+						for k, v := range resp.Cookies {
+							cookies.Set(k, v, "/", "")
+						}
+					}
+				}
+				bodyOut := resp.Body
+				if resp.BodyB64 != "" {
+					if raw, derr := base64.StdEncoding.DecodeString(resp.BodyB64); derr == nil {
+						var sb strings.Builder
+						for _, b := range raw {
+							sb.WriteByte(b)
+						}
+						bodyOut = sb.String()
+					}
+				}
+				result, _ := json.Marshal(map[string]any{
+					"status":  resp.Status,
+					"body":    bodyOut,
+					"bodyB64": resp.BodyB64,
+					"headers": resp.Headers,
+				})
+				resultJSON = string(result)
+			}
+			// Deliver the result back into V8. The JS callback (args[4]) was
+			// captured as a v8go Function on the isolate thread. We call it
+			// from the timer callback (also on the isolate thread, so V8 is
+			// safe) with the result JSON string as the argument.
+			cb, _ := args[4].AsFunction()
+			globalObj := ctx.Global()
+			resultStr := resultJSON
+			p.timerMgr.scheduleTimer(0, false, func() {
+				rv, rerr := v8go.NewValue(p.iso, resultStr)
+				if rerr != nil {
+					log.Printf("[sandbox] async xhr NewValue error: %v", rerr)
+					ctx.PerformMicrotaskCheckpoint()
+					return
+				}
+				if _, cerr := cb.Call(globalObj, rv); cerr != nil {
+					log.Printf("[sandbox] async xhr cb call error: %v", cerr)
+				}
+				ctx.PerformMicrotaskCheckpoint()
+			})
+		}()
+		return nil
+	}
+	asyncFn := v8go.NewFunctionTemplate(iso, asyncCallback)
+	asyncFnVal := asyncFn.GetFunction(p.ctx)
+	p.global.Set("__besNetRequestAsync", asyncFnVal)
+
 	// Real XHR + fetch implementation that calls __besNetRequest.
 	//
 	// Binary-safe by design: the Go callback returns the response body twice —
@@ -994,6 +1155,15 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 	// spec (invalid sequences become U+FFFD, same as a real browser).
 	realJS := `
 		(function(){
+			// Pending async XHR/fetch counter. EvalAwait drains the event loop
+			// until this returns to 0, so async network code resolves before
+			// the eval call returns — matching browser await semantics.
+			window.__besPendingXHR = 0;
+			// __besDeliverXHR is the JS-side receiver for async XHR results.
+			// __besNetRequestAsync (Go) calls the jsCallback passed to it; that
+			// callback is the one captured per-send below, so __besDeliverXHR
+			// itself is a no-op placeholder kept for clarity/debugging.
+			window.__besDeliverXHR = function(r) { /* per-send callbacks handle delivery */ };
 			// __besB64ToUint8Array: shared base64 → Uint8Array decoder (std alphabet).
 			window.__besB64ToUint8Array = function(b64) {
 				var bin = atob(b64);
@@ -1101,38 +1271,46 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 				this._headers[name] = value;
 			};
 			window.XMLHttpRequest.prototype.send = function(body) {
-				var respJSON = __besNetRequest(this._method, this._url, JSON.stringify(this._headers), body || '');
-				try {
-					var r = JSON.parse(respJSON);
-					this.status = r.status;
-					this.statusText = '';
-					this._responseHeaders = r.headers || {};
-					// latin1 body: charCodeAt(i) == byte i (byte-exact, lossless).
-					this.responseText = r.body || '';
-					if (this.responseType === 'arraybuffer') {
-						this.response = r.bodyB64 ? __besB64ToUint8Array(r.bodyB64).buffer : new ArrayBuffer(0);
-					} else if (this.responseType === 'blob') {
-						this.response = new Blob(r.bodyB64 ? [__besB64ToUint8Array(r.bodyB64)] : [], { type: this.getResponseHeader('Content-Type') || '' });
-					} else if (this.responseType === 'json') {
-						try { this.response = JSON.parse(r.body || 'null'); } catch(e) { this.response = null; }
-					} else if (this.responseType === 'document') {
-						this.response = (new DOMParser()).parseFromString(r.body || '', 'text/xml');
-					} else {
-						// '' (text) and 'text': the latin1 string.
-						this.response = r.body || '';
+				var self = this;
+				self.readyState = 2;
+				if (self.onreadystatechange) self.onreadystatechange();
+				// Pending XHRs are tracked so the event-loop driver (EvalAwait)
+				// knows when all async network work has settled.
+				__besPendingXHR = __besPendingXHR + 1;
+				__besNetRequestAsync(self._method, self._url, JSON.stringify(self._headers), body || '', function(respJSON) {
+					__besPendingXHR = __besPendingXHR - 1;
+					try {
+						var r = JSON.parse(respJSON);
+						self.status = r.status;
+						self.statusText = '';
+						self._responseHeaders = r.headers || {};
+						self.responseText = r.body || '';
+						if (self.responseType === 'arraybuffer') {
+							self.response = r.bodyB64 ? __besB64ToUint8Array(r.bodyB64).buffer : new ArrayBuffer(0);
+						} else if (self.responseType === 'blob') {
+							self.response = new Blob(r.bodyB64 ? [__besB64ToUint8Array(r.bodyB64)] : [], { type: self.getResponseHeader('Content-Type') || '' });
+						} else if (self.responseType === 'json') {
+							try { self.response = JSON.parse(r.body || 'null'); } catch(e) { self.response = null; }
+						} else if (self.responseType === 'document') {
+							self.response = (new DOMParser()).parseFromString(r.body || '', 'text/xml');
+						} else {
+							self.response = r.body || '';
+						}
+						self.readyState = 3;
+						if (self.onreadystatechange) self.onreadystatechange();
+						self.readyState = 4;
+						if (self.onreadystatechange) self.onreadystatechange();
+						if (r.status > 0) {
+							if (self.onload) self.onload();
+						} else {
+							if (self.onerror) self.onerror(new Error(r.error || 'network error'));
+						}
+					} catch(e) {
+						self.status = 0;
+						self.readyState = 4;
+						if (self.onerror) self.onerror(e);
 					}
-					this.readyState = 4;
-					if (this.onreadystatechange) this.onreadystatechange();
-					if (r.status > 0) {
-						if (this.onload) this.onload();
-					} else {
-						if (this.onerror) this.onerror(new Error(r.error || 'network error'));
-					}
-				} catch(e) {
-					this.status = 0;
-					this.readyState = 4;
-					if (this.onerror) this.onerror(e);
-				}
+				});
 			};
 			window.XMLHttpRequest.prototype.getAllResponseHeaders = function() {
 				var result = '';
@@ -1151,7 +1329,7 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 			window.XMLHttpRequest.prototype.overrideMimeType = function(mime) {
 				this._overrideMime = mime;
 			};
-			window.XMLHttpRequest.prototype.abort = function() {};
+			window.XMLHttpRequest.prototype.abort = function() { this._aborted = true; };
 
 			window.fetch = function(resource, options) {
 				options = options || {};
@@ -1159,11 +1337,14 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 				var urlStr = typeof resource === 'string' ? resource : (resource && resource.url || '');
 				var headers = options.headers || {};
 				var body = options.body || '';
-				var respJSON = __besNetRequest(method, urlStr, JSON.stringify(headers), typeof body === 'string' ? body : '');
+				__besPendingXHR = __besPendingXHR + 1;
 				return new Promise(function(resolve, reject) {
-					try {
-						resolve(__besMakeResponse(JSON.parse(respJSON)));
-					} catch(e) { reject(e); }
+					__besNetRequestAsync(method, urlStr, JSON.stringify(headers), typeof body === 'string' ? body : '', function(respJSON) {
+						__besPendingXHR = __besPendingXHR - 1;
+						try {
+							resolve(__besMakeResponse(JSON.parse(respJSON)));
+						} catch(e) { reject(e); }
+					});
 				});
 			};
 		})();
@@ -1207,4 +1388,10 @@ func popReservedHeader(headers map[string]string, name string) string {
 		}
 	}
 	return v
+}
+
+// jsonString returns a JSON-quoted string literal for s, safe to embed in JS.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

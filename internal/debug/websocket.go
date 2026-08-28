@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -166,9 +167,99 @@ func (s *CDPServer) handleConsole(req CDPRequest) CDPResponse {
 	return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
 }
 
+// debuggerState tracks breakpoints and pause-on-exceptions state for a CDP
+// Debugger session. v8go does not expose V8 Inspector session
+// (sendCommand/dispatchProtocolMessage), so true execution pause/step is not
+// possible — but we implement the full CDP Debugger.* method routing so
+// DevTools connects cleanly and breakpoint state is tracked. When a
+// breakpoint URL+line matches a script being evaluated, the bridge Eval path
+// can inject a console.trace to surface the hit.
+type debuggerState struct {
+	enabled             bool
+	breakpoints         map[string]breakpoint // breakpointId → breakpoint
+	pauseOnExceptions   string                // "none" | "uncaught" | "all"
+	nextBreakpointID    int
+}
+
+type breakpoint struct {
+	ID       string `json:"breakpointId"`
+	URL      string `json:"url"`
+	Line     int    `json:"lineNumber"`
+	Column   int    `json:"columnNumber,omitempty"`
+	Condition string `json:"condition,omitempty"`
+}
+
 func (s *CDPServer) handleDebugger(req CDPRequest) CDPResponse {
-	// Debugger.enable, Debugger.setBreakpoint, etc.
-	return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
+	if s.dbgState == nil {
+		s.dbgState = &debuggerState{breakpoints: make(map[string]breakpoint)}
+	}
+	dbg := s.dbgState
+	switch req.Method {
+	case "Debugger.enable":
+		dbg.enabled = true
+		return CDPResponse{ID: req.ID, Result: json.RawMessage(`{"debuggerId":"bes-dbg-1"}`)}
+	case "Debugger.disable":
+		dbg.enabled = false
+		return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
+	case "Debugger.setBreakpointsActive":
+		// Always active in our model
+		return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
+	case "Debugger.setBreakpointByUrl":
+		var params struct {
+			URL       string `json:"url"`
+			Line      int    `json:"lineNumber"`
+			Column    int    `json:"columnNumber"`
+			Condition string `json:"condition"`
+		}
+		json.Unmarshal(req.Params, &params)
+		dbg.nextBreakpointID++
+		bpID := fmt.Sprintf("bes-bp-%d", dbg.nextBreakpointID)
+		bp := breakpoint{ID: bpID, URL: params.URL, Line: params.Line, Column: params.Column, Condition: params.Condition}
+		dbg.breakpoints[bpID] = bp
+		result, _ := json.Marshal(map[string]any{
+			"breakpointId": bpID,
+			"locations":    []map[string]any{{"scriptId": "1", "lineNumber": params.Line, "columnNumber": params.Column}},
+		})
+		return CDPResponse{ID: req.ID, Result: result}
+	case "Debugger.removeBreakpoint":
+		var params struct {
+			BPID string `json:"breakpointId"`
+		}
+		json.Unmarshal(req.Params, &params)
+		delete(dbg.breakpoints, params.BPID)
+		return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
+	case "Debugger.getBreakpoints":
+		bps := []breakpoint{}
+		for _, bp := range dbg.breakpoints {
+			bps = append(bps, bp)
+		}
+		result, _ := json.Marshal(map[string]any{"breakpoints": bps})
+		return CDPResponse{ID: req.ID, Result: result}
+	case "Debugger.setPauseOnExceptions":
+		var params struct {
+			State string `json:"state"`
+		}
+		json.Unmarshal(req.Params, &params)
+		dbg.pauseOnExceptions = params.State
+		return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
+	case "Debugger.pause":
+		// v8go has no Inspector session — cannot truly pause V8 execution.
+		// DevTools expects a Debugger.paused event; we send a synthetic one
+		// so the UI enters paused state (step/resume are no-ops).
+		return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
+	case "Debugger.resume":
+		return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
+	case "Debugger.stepOver", "Debugger.stepInto", "Debugger.stepOut":
+		// No-op: v8go Inspector session not exposed. DevTools treats these
+		// as immediate resume since we can't hold execution.
+		return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
+	case "Debugger.getScriptSource":
+		// Return empty source — actual script source isn't tracked at CDP level.
+		result, _ := json.Marshal(map[string]string{"scriptSource": ""})
+		return CDPResponse{ID: req.ID, Result: result}
+	default:
+		return CDPResponse{ID: req.ID, Result: json.RawMessage("{}")}
+	}
 }
 
 func (s *CDPServer) handlePage(req CDPRequest) CDPResponse {

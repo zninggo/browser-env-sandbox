@@ -269,6 +269,16 @@ func (s *Service) SetCookie(id, name, value string) error {
 	return nil
 }
 
+// SwapFingerprint hot-swaps a session's fingerprint (snapshot/fingerprint
+// hot-swap). Returns the new fingerprint.
+func (s *Service) SwapFingerprint(id string, opts api.SessionOptions) (*api.Fingerprint, error) {
+	e, ok := s.getEntry(id)
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", id)
+	}
+	return e.sess.SwapFingerprint(s.engine, opts)
+}
+
 // CloseSession disposes a session and removes it from the registry.
 func (s *Service) CloseSession(id string) error {
 	s.mu.Lock()
