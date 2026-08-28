@@ -21,9 +21,7 @@
 - 桥接只能子进程，开销大
 
 **为什么不用 Rust + rusty_v8：**
-- 欧尼酱本地有 Go 环境，无 Rust 环境
-- Go 的开发效率在原型阶段更高
-- v8go 足够成熟，Isolate 隔离能力与 rusty_v8 等价
+- Go 的开发效率在原型阶段更高，且 v8go 足够成熟，Isolate 隔离能力与 rusty_v8 等价
 - 未来如需极致性能可迁移 Rust（接口不变）
 
 ### 1.2 V8 接入：v8go
@@ -327,9 +325,7 @@ GET    /health                            liveness probe
 ```
 bridge/
 ├── server.go         # HTTP API 服务器 (Go 1.22 ServeMux)
-├── service.go        # 业务逻辑层 (session 注册表 + broadcaster)
-└── proto/
-    └── sandbox.proto  # 已废弃 (仅参考)
+└── service.go        # 业务逻辑层 (session 注册表 + broadcaster)
 ```
 
 **SDK 结构：**
