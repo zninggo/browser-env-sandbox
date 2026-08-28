@@ -37,9 +37,9 @@ func NewUTLSClient(target string) *UTLSClient {
 	}
 }
 
-func (c *UTLSClient) SetProxy(proxyURL string) { c.proxy = proxyURL }
+func (c *UTLSClient) SetProxy(proxyURL string)   { c.proxy = proxyURL }
 func (c *UTLSClient) SetTimeout(d time.Duration) { c.timeout = d }
-func (c *UTLSClient) CheckAvailable() bool { return true }
+func (c *UTLSClient) CheckAvailable() bool       { return true }
 
 // dialUTLS establishes a TCP connection and wraps it with a utls TLS handshake
 // using Chrome's ClientHello fingerprint. The returned net.Conn is a *utls.UConn.

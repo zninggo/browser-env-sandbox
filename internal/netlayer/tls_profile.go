@@ -6,14 +6,14 @@ package netlayer
 // In live mode, this configures curl-impersonate to produce matching
 // TLS handshakes. In replay mode, it's metadata only.
 type TLSProfile struct {
-	Browser     string `json:"browser"`      // "chrome"
-	Version     string `json:"version"`      // "131"
-	Impersonate string `json:"impersonate"`  // curl_cffi impersonate target
-	JA3         string `json:"ja3"`          // JA3 fingerprint hash
-	JA4         string `json:"ja4"`          // JA4 fingerprint hash
-	H2Settings  []uint32 `json:"h2_settings"` // HTTP/2 SETTINGS frame values
+	Browser       string   `json:"browser"`         // "chrome"
+	Version       string   `json:"version"`         // "131"
+	Impersonate   string   `json:"impersonate"`     // curl_cffi impersonate target
+	JA3           string   `json:"ja3"`             // JA3 fingerprint hash
+	JA4           string   `json:"ja4"`             // JA4 fingerprint hash
+	H2Settings    []uint32 `json:"h2_settings"`     // HTTP/2 SETTINGS frame values
 	H2PseudoOrder []string `json:"h2_pseudo_order"` // HTTP/2 pseudo-header order
-	HeaderOrder  []string `json:"header_order"`    // HTTP/1.1 header order
+	HeaderOrder   []string `json:"header_order"`    // HTTP/1.1 header order
 }
 
 // DefaultTLSProfiles returns the built-in TLS profiles for known browsers.
@@ -21,67 +21,67 @@ type TLSProfile struct {
 func DefaultTLSProfiles() map[string]*TLSProfile {
 	return map[string]*TLSProfile{
 		"chrome152": {
-			Browser:     "chrome",
-			Version:     "152",
-			Impersonate: "chrome150", // curl_cffi max is 150, use closest
-			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			Browser:       "chrome",
+			Version:       "152",
+			Impersonate:   "chrome150", // curl_cffi max is 150, use closest
+			JA3:           "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:    []uint32{1, 65536, 0, 4, 3, 15663105, 0},
 			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
-			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+			HeaderOrder:   []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
 		},
 		"chrome150": {
-			Browser:     "chrome",
-			Version:     "150",
-			Impersonate: "chrome150",
-			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			Browser:       "chrome",
+			Version:       "150",
+			Impersonate:   "chrome150",
+			JA3:           "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:    []uint32{1, 65536, 0, 4, 3, 15663105, 0},
 			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
-			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+			HeaderOrder:   []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
 		},
 		"chrome146": {
-			Browser:     "chrome",
-			Version:     "146",
-			Impersonate: "chrome146",
-			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			Browser:       "chrome",
+			Version:       "146",
+			Impersonate:   "chrome146",
+			JA3:           "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:    []uint32{1, 65536, 0, 4, 3, 15663105, 0},
 			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
-			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+			HeaderOrder:   []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
 		},
 		"chrome142": {
-			Browser:     "chrome",
-			Version:     "142",
-			Impersonate: "chrome142",
-			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			Browser:       "chrome",
+			Version:       "142",
+			Impersonate:   "chrome142",
+			JA3:           "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:    []uint32{1, 65536, 0, 4, 3, 15663105, 0},
 			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
-			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+			HeaderOrder:   []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
 		},
 		"chrome136": {
-			Browser:     "chrome",
-			Version:     "136",
-			Impersonate: "chrome136",
-			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			Browser:       "chrome",
+			Version:       "136",
+			Impersonate:   "chrome136",
+			JA3:           "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:    []uint32{1, 65536, 0, 4, 3, 15663105, 0},
 			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
-			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+			HeaderOrder:   []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
 		},
 		"chrome131": {
-			Browser:     "chrome",
-			Version:     "131",
-			Impersonate: "chrome131",
-			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			Browser:       "chrome",
+			Version:       "131",
+			Impersonate:   "chrome131",
+			JA3:           "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:    []uint32{1, 65536, 0, 4, 3, 15663105, 0},
 			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
-			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+			HeaderOrder:   []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
 		},
 		"chrome124": {
-			Browser:     "chrome",
-			Version:     "124",
-			Impersonate: "chrome124",
-			JA3:         "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
-			H2Settings:  []uint32{1, 65536, 0, 4, 3, 15663105, 0},
+			Browser:       "chrome",
+			Version:       "124",
+			Impersonate:   "chrome124",
+			JA3:           "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0",
+			H2Settings:    []uint32{1, 65536, 0, 4, 3, 15663105, 0},
 			H2PseudoOrder: []string{":method", ":authority", ":scheme", ":path"},
-			HeaderOrder: []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
+			HeaderOrder:   []string{"user-agent", "accept", "accept-language", "accept-encoding", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"},
 		},
 	}
 }
@@ -100,8 +100,8 @@ func GetTLSProfile(browser, version string) *TLSProfile {
 
 // ProxyConfig holds per-session proxy configuration.
 type ProxyConfig struct {
-	URL      string `json:"url"`       // "http://user:pass@host:port" or "socks5://host:port"
-	Type     string `json:"type"`      // "http", "socks5", "socks4"
+	URL      string `json:"url"`  // "http://user:pass@host:port" or "socks5://host:port"
+	Type     string `json:"type"` // "http", "socks5", "socks4"
 	Username string `json:"username"`
 	Password string `json:"password"`
 }

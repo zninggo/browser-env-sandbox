@@ -12,17 +12,17 @@ import (
 
 // ProxyHealthChecker checks proxy availability and latency.
 type ProxyHealthChecker struct {
-	testURL    string
-	timeout    time.Duration
-	mu         sync.Mutex
-	results    map[string]*ProxyHealth
+	testURL string
+	timeout time.Duration
+	mu      sync.Mutex
+	results map[string]*ProxyHealth
 }
 
 // ProxyHealth holds the health status of a proxy.
 type ProxyHealth struct {
 	URL       string    `json:"url"`
 	Alive     bool      `json:"alive"`
-	Latency   int64     `json:"latency_ms"`  // milliseconds
+	Latency   int64     `json:"latency_ms"` // milliseconds
 	LastCheck time.Time `json:"last_check"`
 	Error     string    `json:"error,omitempty"`
 }

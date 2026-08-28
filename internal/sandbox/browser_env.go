@@ -643,17 +643,17 @@ func (p *PostContextBuilder) injectTimezone() {
 	// Base offsets in minutes (positive = east of UTC) and DST start/end
 	// (month indexes, 0-based) for zones that observe DST.
 	type zoneInfo struct {
-		offsetMin   int
-		hasDST      bool
+		offsetMin    int
+		hasDST       bool
 		dstOffsetMin int
 	}
 	zones := map[string]zoneInfo{
-		"Asia/Shanghai":     {offsetMin: 480},
-		"Asia/Tokyo":        {offsetMin: 540},
-		"Asia/Seoul":        {offsetMin: 540},
-		"Asia/Singapore":    {offsetMin: 480},
-		"America/New_York":  {offsetMin: -300, hasDST: true, dstOffsetMin: -240},
-		"Europe/London":     {offsetMin: 0, hasDST: true, dstOffsetMin: -60},
+		"Asia/Shanghai":    {offsetMin: 480},
+		"Asia/Tokyo":       {offsetMin: 540},
+		"Asia/Seoul":       {offsetMin: 540},
+		"Asia/Singapore":   {offsetMin: 480},
+		"America/New_York": {offsetMin: -300, hasDST: true, dstOffsetMin: -240},
+		"Europe/London":    {offsetMin: 0, hasDST: true, dstOffsetMin: -60},
 	}
 	zi, ok := zones[tz]
 	if !ok {

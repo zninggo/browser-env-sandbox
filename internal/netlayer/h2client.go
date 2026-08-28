@@ -20,7 +20,7 @@ import (
 // Chrome HTTP/2 fingerprint constants.
 // Captured from real Chromium 151 via tls.peet.ws
 // (akamai_fingerprint: 1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p,
-//  hash 52d84b11737d980aef856699f885ca86).
+// hash 52d84b11737d980aef856699f885ca86).
 const (
 	// chromeH2HeaderTableSize is SETTINGS_HEADER_TABLE_SIZE (0x1).
 	chromeH2HeaderTableSize = 65536
