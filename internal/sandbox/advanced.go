@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"rogchap.com/v8go"
+	"github.com/tommie/v8go"
 )
 
 // EvalWithTimeout executes JavaScript with a timeout.
