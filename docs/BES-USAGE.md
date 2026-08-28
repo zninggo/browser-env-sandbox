@@ -153,7 +153,7 @@ sig = bes_api(f"/api/session/{sid}/eval",
 ## 六、架构边界
 
 - **bes 提供通用能力**：V8 JS 执行 + TLS/HTTP/2 指纹 + 网络请求 + cookie 管理
-- **不包含任何站点专属逻辑**：WAF challenge、签名算法、特定 cookie 流程等由调用方负责
+- **不包含任何站点专属逻辑**：页面自有逻辑、业务签名、特定 cookie 流程等由调用方负责
 - **零外部浏览器依赖**：不依赖 Chrome/Chromium/Puppeteer/Node
 
 ## 七、验证指纹

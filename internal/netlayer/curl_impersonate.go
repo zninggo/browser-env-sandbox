@@ -74,7 +74,7 @@ func (c *CurlImpersonate) Request(method, url string, headers map[string]string,
 		args = append(args, "--proxy", c.proxy)
 	}
 
-	// Don't follow redirects (WAF challenge pages need manual handling)
+	// Don't follow redirects (callers handle redirects manually)
 	args = append(args, "--location", "--max-redirs", "0")
 
 	cmd := exec.Command(wrapper, args...)

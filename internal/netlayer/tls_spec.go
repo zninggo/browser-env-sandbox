@@ -24,8 +24,7 @@ const (
 //
 // This is necessary because utls v1.8.2's HelloChrome_133 spec predates
 // Chrome's addition of PQ signature schemes (0x0904-0x0906). Without them,
-// the JA4 fingerprint's signature-algorithm hash differs from real Chrome,
-// which can be detected server-side.
+// the JA4 fingerprint's signature-algorithm hash differs from real Chrome.
 func buildChromeClientHelloSpec() (utls.ClientHelloSpec, error) {
 	spec, err := utls.UTLSIdToSpec(utls.HelloChrome_133)
 	if err != nil {
