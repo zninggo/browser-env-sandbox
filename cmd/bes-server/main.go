@@ -65,14 +65,15 @@ func main() {
 
 	// CDP debug server: exposes /json/list + WebSocket so Chrome DevTools can
 	// connect to sandbox sessions. Off by default; enable with --cdp-port.
-	// Bind to loopback only — CDP gives full JS control, never expose it
-	// unauthenticated. Use an SSH tunnel for remote debugging.
+	// Bind to all interfaces — in Docker the container itself is the security
+	// boundary and the published port stays host-loopback-only (127.0.0.1:9223
+	// in docker-compose). Remote users connect via an SSH tunnel.
 	if *cdpPort != 0 {
-		cdp := debug.NewCDPServer(fmt.Sprintf("127.0.0.1:%d", *cdpPort), &cdpBridge{svc})
+		cdp := debug.NewCDPServer(fmt.Sprintf("0.0.0.0:%d", *cdpPort), &cdpBridge{svc})
 		if err := cdp.Start(); err != nil {
 			log.Printf("[bes-server] CDP server start failed: %v", err)
 		} else {
-			log.Printf("[bes-server] CDP debug on http://127.0.0.1:%d (use SSH tunnel for remote)", *cdpPort)
+			log.Printf("[bes-server] CDP debug on 0.0.0.0:%d (publish port stays host-loopback)", *cdpPort)
 		}
 	}
 
