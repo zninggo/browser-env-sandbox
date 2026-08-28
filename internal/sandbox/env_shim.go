@@ -22,3 +22,10 @@ var shimPart5 string
 func envShimJS() string {
 	return shimPart1 + "\n" + shimPart2 + "\n" + shimPart3 + "\n" + shimPart4 + "\n" + shimPart5
 }
+
+// envShimParts returns each shim file as a separate string.
+// Running them individually prevents a single syntax error from
+// blocking all environment enhancements.
+func envShimParts() []string {
+	return []string{shimPart1, shimPart2, shimPart3, shimPart4, shimPart5}
+}
