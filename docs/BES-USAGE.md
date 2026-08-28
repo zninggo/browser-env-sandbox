@@ -45,7 +45,8 @@ curl -X POST http://localhost:18900/api/session \
 
 可选字段：
 - `browser` / `os` — 指纹平台（chrome/windows、chrome/macos 等）
-- `seed` — 固定随机种子（可复现指纹）
+- `seed` — 指纹种子。**不传或 0 = 每次唯一随机**；传固定值（如 `42`）= 确定性复现同一指纹。响应中 `fingerprint.seed` 会带出生成时实际使用的 seed，记录即可复现
+- `timezone` — 指定时区（如 `"Asia/Tokyo"`），用于与代理 IP 地理保持一致。`languages` 自动按时区联动（知识库配对）。不传 = 随机；未知时区名自动回退随机。当前支持：`Asia/Shanghai` / `Asia/Tokyo` / `Asia/Seoul` / `Asia/Singapore` / `America/New_York` / `Europe/London`
 - `location` — 模拟的 URL（影响 document.location）
 - `cookies` — 预设 cookie `{"name":"value"}`
 - `proxy` — 代理 URL

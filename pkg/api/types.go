@@ -74,9 +74,10 @@ type WindowProps struct {
 
 // SessionOptions configures a sandbox session.
 type SessionOptions struct {
-	Seed       uint64  `json:"seed,omitempty"`
+	Seed       uint64  `json:"seed,omitempty"`       // 0 = random unique fingerprint
 	Browser    string  `json:"browser,omitempty"`    // "chrome"
 	OS         string  `json:"os,omitempty"`         // "windows"
+	Timezone   string  `json:"timezone,omitempty"`   // e.g. "Asia/Tokyo"; empty = random from KB
 	Location   string  `json:"location"`             // document.URL
 	Cookies    map[string]string `json:"cookies,omitempty"`
 	Proxy      string  `json:"proxy,omitempty"`

@@ -36,6 +36,13 @@ func NewWithKB(kb *KnowledgeBase) *Engine {
 // If seed is 0, a random seed is used.
 // opts constrains the browser/OS if non-empty.
 func (e *Engine) Generate(seed uint64, browser, os string) (*api.Fingerprint, error) {
+	return e.GenerateWithTimezone(seed, browser, os, "")
+}
+
+// GenerateWithTimezone produces a self-consistent fingerprint with the
+// timezone constrained to the given IANA name (empty = random pick).
+// Languages follow the timezone automatically (knowledge base pairing).
+func (e *Engine) GenerateWithTimezone(seed uint64, browser, os, timezone string) (*api.Fingerprint, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -56,8 +63,18 @@ func (e *Engine) Generate(seed uint64, browser, os string) (*api.Fingerprint, er
 	// 4. Sample screen
 	screen := e.kb.SampleScreen(rng, osp.Name)
 
-	// 5. Sample timezone + languages (consistent with each other)
-	tz, langs := e.kb.SampleTimezone(rng)
+	// 5. Sample timezone + languages (consistent with each other).
+	// A caller-provided timezone (e.g. to match proxy geo) overrides the
+	// random pick; unknown names fall back to random.
+	tz, langs := "", []string(nil)
+	if timezone != "" {
+		if n, l, ok := e.kb.SampleTimezoneNamed(timezone); ok {
+			tz, langs = n, l
+		}
+	}
+	if tz == "" {
+		tz, langs = e.kb.SampleTimezone(rng)
+	}
 
 	// 6. Build navigator from all the above
 	nav := buildNavigator(bp, osp, gpu, screen)

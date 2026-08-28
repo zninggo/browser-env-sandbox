@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/zninggo/bes/pkg/api"
 )
@@ -297,6 +298,18 @@ func (kb *KnowledgeBase) SampleScreen(rng *seededRNG, osName string) map[string]
 func (kb *KnowledgeBase) SampleTimezone(rng *seededRNG) (string, []string) {
 	e := kb.Timezones[rng.Intn(len(kb.Timezones))]
 	return e.Name, e.Languages
+}
+
+// SampleTimezoneNamed returns the timezone entry matching name (e.g.
+// "Asia/Tokyo"). Falls back to random sampling when no entry matches,
+// so callers can pass untrusted values safely.
+func (kb *KnowledgeBase) SampleTimezoneNamed(name string) (string, []string, bool) {
+	for _, e := range kb.Timezones {
+		if strings.EqualFold(e.Name, name) {
+			return e.Name, e.Languages, true
+		}
+	}
+	return "", nil, false
 }
 
 func (kb *KnowledgeBase) LookupCanvasHash(majorVer int, osName, gpuVendor string) api.CanvasFP {

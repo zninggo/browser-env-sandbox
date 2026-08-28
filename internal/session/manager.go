@@ -52,8 +52,8 @@ func New(fpEng *fpengine.Engine, sbEng *sandbox.Engine, proxyPool *netlayer.Prox
 
 // Create creates a new isolated session.
 func (m *Manager) Create(opts api.SessionOptions) (*ManagedSession, error) {
-	// 1. Generate fingerprint (session-unique)
-	fp, err := m.fpEngine.Generate(opts.Seed, opts.Browser, opts.OS)
+	// 1. Generate fingerprint (session-unique, timezone-constrained if set)
+	fp, err := m.fpEngine.GenerateWithTimezone(opts.Seed, opts.Browser, opts.OS, opts.Timezone)
 	if err != nil {
 		return nil, fmt.Errorf("fingerprint generation failed: %w", err)
 	}
