@@ -273,8 +273,9 @@ func (c *CurlCffiClient) CheckAvailable() bool {
 // --- Unified client ---
 
 // TLSClient is a unified TLS-fingerprinting HTTP client.
-// It tries curl-impersonate first, falls back to curl_cffi, then standard Go HTTP.
+// Priority: utls (pure Go, most accurate) → curl-impersonate → curl_cffi → standard Go HTTP.
 type TLSClient struct {
+	utls        *UTLSClient
 	impersonate *CurlImpersonate
 	cffi        *CurlCffiClient
 	fallback    *http.Client
@@ -284,6 +285,12 @@ type TLSClient struct {
 // NewTLSClient creates a unified TLS client with the given target.
 func NewTLSClient(target string) *TLSClient {
 	tc := &TLSClient{target: target}
+
+	// Try utls first — pure Go, most accurate TLS fingerprint, no subprocess
+	tc.utls = NewUTLSClient(target)
+	if tc.utls.CheckAvailable() {
+		return tc
+	}
 
 	// Try curl-impersonate
 	tc.impersonate = NewCurlImpersonate("", target)
@@ -309,6 +316,9 @@ func NewTLSClient(target string) *TLSClient {
 
 // Request sends an HTTP request using the best available TLS client.
 func (tc *TLSClient) Request(method, url string, headers map[string]string, body []byte) (*Response, error) {
+	if tc.utls != nil && tc.utls.CheckAvailable() {
+		return tc.utls.Request(method, url, headers, body)
+	}
 	if tc.impersonate != nil && tc.impersonate.CheckAvailable() {
 		return tc.impersonate.Request(method, url, headers, body)
 	}
@@ -353,6 +363,9 @@ func (tc *TLSClient) fallbackRequest(method, url string, headers map[string]stri
 
 // SetProxy configures proxy on all backends.
 func (tc *TLSClient) SetProxy(proxyURL string) {
+	if tc.utls != nil {
+		tc.utls.SetProxy(proxyURL)
+	}
 	if tc.impersonate != nil {
 		tc.impersonate.SetProxy(proxyURL)
 	}
@@ -363,6 +376,9 @@ func (tc *TLSClient) SetProxy(proxyURL string) {
 
 // Backend returns which TLS backend is in use.
 func (tc *TLSClient) Backend() string {
+	if tc.utls != nil && tc.utls.CheckAvailable() {
+		return "utls"
+	}
 	if tc.impersonate != nil && tc.impersonate.CheckAvailable() {
 		return "curl-impersonate"
 	}
