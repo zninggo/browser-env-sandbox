@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -74,37 +75,52 @@ func (s *CDPServer) handleVersion(w http.ResponseWriter, r *http.Request) {
 		"User-Agent":       "Mozilla/5.0 (compatible; BES/0.2; V8/9.0)",
 		"V8-Version":      "9.0",
 		"WebKit-Version":  "537.36",
-		"webSocketDebuggerUrl": fmt.Sprintf("ws://localhost%s", s.addr),
+		"webSocketDebuggerUrl": cdpWebSocketURL(r, s.addr),
 	})
 }
 
 // /json/list — Lists available debugging targets (sandbox sessions)
 func (s *CDPServer) handleList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	wsBase := cdpWebSocketURL(r, s.addr)
 	sessions := s.sessions.GetSessions()
 	targets := make([]map[string]interface{}, 0, len(sessions))
 	for _, sess := range sessions {
+		wsURL := fmt.Sprintf("%s/devtools/page/%s", wsBase, sess.ID)
 		targets = append(targets, map[string]interface{}{
 			"id":                     sess.ID,
 			"title":                  sess.Title,
 			"url":                    sess.URL,
 			"type":                   "page",
-			"webSocketDebuggerUrl":   fmt.Sprintf("ws://localhost%s/devtools/page/%s", s.addr, sess.ID),
-			"devtoolsFrontendUrl":    fmt.Sprintf("devtools://devtools/bundled/inspector.html?ws=localhost%s/devtools/page/%s", s.addr, sess.ID),
+			"webSocketDebuggerUrl":   wsURL,
+			"devtoolsFrontendUrl":    fmt.Sprintf("devtools://devtools/bundled/inspector.html?ws=%s", strings.TrimPrefix(strings.TrimPrefix(wsURL, "ws://"), "wss://")),
 		})
 	}
 	if len(targets) == 0 {
 		// Always show at least one target so DevTools can connect
+		wsURL := fmt.Sprintf("%s/devtools/page/default", wsBase)
 		targets = append(targets, map[string]interface{}{
 			"id":                     "default",
 			"title":                  "browser-env-sandbox",
 			"url":                    "about:blank",
 			"type":                   "page",
-			"webSocketDebuggerUrl":   fmt.Sprintf("ws://localhost%s/devtools/page/default", s.addr),
-			"devtoolsFrontendUrl":    fmt.Sprintf("devtools://devtools/bundled/inspector.html?ws=localhost%s/devtools/page/default", s.addr),
+			"webSocketDebuggerUrl":   wsURL,
+			"devtoolsFrontendUrl":    fmt.Sprintf("devtools://devtools/bundled/inspector.html?ws=%s", strings.TrimPrefix(strings.TrimPrefix(wsURL, "ws://"), "wss://")),
 		})
 	}
 	json.NewEncoder(w).Encode(targets)
+}
+
+// cdpWebSocketURL builds the advertised WebSocket base URL from the request's
+// Host header so the URL is reachable from the client's perspective (behind
+// an SSH tunnel the host is 127.0.0.1, not the bind address).
+func cdpWebSocketURL(r *http.Request, addr string) string {
+	host := r.Host
+	if host == "" {
+		_, port, _ := net.SplitHostPort(addr)
+		host = "127.0.0.1:" + port
+	}
+	return "ws://" + host
 }
 
 func (s *CDPServer) handleProtocol(w http.ResponseWriter, r *http.Request) {
