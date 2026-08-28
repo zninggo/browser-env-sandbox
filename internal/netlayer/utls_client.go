@@ -3,18 +3,15 @@ package netlayer
 import (
 	"compress/gzip"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/andybalholm/brotli"
 	utls "github.com/refraction-networking/utls"
-	"golang.org/x/net/http2"
 )
 
 // UTLSClient is a TLS-fingerprinting HTTP client using utls.
@@ -62,8 +59,36 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, host, port string) (net.Conn,
 
 	tlsConn := utls.UClient(conn, &utls.Config{
 		ServerName: host,
-	}, utls.HelloChrome_131)
+	}, utls.HelloChrome_133)
 
+	// Build the ClientHello with Chrome 133 spec. BuildHandshakeState (with
+	// session) sets clientHelloBuildStatus = BuildByUtls, so HandshakeContext
+	// will NOT re-run applyPresetByID (which would overwrite our mods).
+	// It WILL re-run ApplyConfig + MarshalClientHello, picking up our changes.
+	if err := tlsConn.BuildHandshakeState(); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("build handshake state: %w", err)
+	}
+
+	// Post-build: inject post-quantum signature algorithms (0x0904-0x0906)
+	// into the SignatureAlgorithmsExtension. Modern Chrome (140+) includes
+	// these, and without them the JA4 sig-alg hash differs from real Chrome.
+	for _, ext := range tlsConn.Extensions {
+		if sigExt, ok := ext.(*utls.SignatureAlgorithmsExtension); ok {
+			sigExt.SupportedSignatureAlgorithms = append(
+				[]utls.SignatureScheme{
+					sigSchemeMLDSA65SHA256,
+					sigSchemeMLDSA87SHA512,
+					sigSchemeSLHDSA192sSHA256,
+				},
+				sigExt.SupportedSignatureAlgorithms...,
+			)
+			break
+		}
+	}
+
+	// HandshakeContext will re-ApplyConfig (writing our modified sig algs to
+	// the Hello) and re-MarshalClientHello, then perform the TLS handshake.
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("TLS handshake failed: %w", err)
@@ -72,17 +97,22 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, host, port string) (net.Conn,
 	return tlsConn, nil
 }
 
-// Request sends an HTTP request with Chrome-mimicking TLS fingerprint.
-// It uses http.Transport with a custom DialTLSContext that performs the utls
-// handshake. HTTP/2 is disabled because http.Transport checks for *tls.Conn
-// to enable h2, and utls.UConn is not *tls.Conn. HTTP/1.1 over utls is still
-// sufficient to pass JA3/JA4 TLS fingerprint checks.
+// Request sends an HTTP request with Chrome-mimicking TLS + HTTP/2 fingerprint.
+//
+// It first tries requestH2 — a manually-constructed HTTP/2 client that
+// controls every frame byte (SETTINGS, WINDOW_UPDATE, HEADERS with PRIORITY,
+// pseudo-header order) to match real Chrome's akamai fingerprint exactly.
+// If HTTP/2 fails (e.g. ALPN doesn't negotiate h2), it falls back to HTTP/1.1
+// over utls.
 func (c *UTLSClient) Request(method, reqURL string, headers map[string]string, body []byte) (*Response, error) {
-	parsedURL, err := url.Parse(reqURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid URL: %w", err)
+	// Primary path: HTTP/2 with Chrome-precise frame fingerprinting.
+	resp, err := c.requestH2(context.Background(), method, reqURL, headers, body)
+	if err == nil {
+		return resp, nil
 	}
 
+	// Fallback: HTTP/1.1 over utls (still Chrome TLS fingerprint).
+	parsedURL, _ := url.Parse(reqURL)
 	host := parsedURL.Hostname()
 	port := parsedURL.Port()
 	if port == "" {
@@ -92,115 +122,7 @@ func (c *UTLSClient) Request(method, reqURL string, headers map[string]string, b
 			port = "80"
 		}
 	}
-
-	// Create transport with utls dial + Chrome-aligned HTTP/2 SETTINGS.
-	// Since utls.UConn is not *crypto/tls.Conn, http.Transport won't enable
-	// HTTP/2 automatically. We use http2.Transport directly for h2 support.
-	// The SETTINGS frame values below match what real Chrome sends, so the
-	// HTTP/2 fingerprint (Akamai-style) lines up with the TLS fingerprint.
-	transport := &http2.Transport{
-		AllowHTTP: true,
-		DialTLSContext: func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
-			return c.dialUTLS(ctx, host, port)
-		},
-		// Chrome's SETTINGS_HEADER_TABLE_SIZE (Chrome uses 65536, not the
-		// HTTP/2 spec default of 4096 that Go sends).
-		MaxDecoderHeaderTableSize: 65536,
-		MaxEncoderHeaderTableSize: 65536,
-		// Chrome's SETTINGS_MAX_HEADER_LIST_SIZE.
-		MaxHeaderListSize: 262144,
-	}
-
-	// Build request
-	var bodyReader io.Reader
-	if len(body) > 0 {
-		bodyReader = strings.NewReader(string(body))
-	}
-	httpReq, err := http.NewRequestWithContext(context.Background(), method, reqURL, bodyReader)
-	if err != nil {
-		return nil, err
-	}
-
-	// Set headers
-	for k, v := range headers {
-		httpReq.Header.Set(k, v)
-	}
-	// Defaults matching Chrome
-	if httpReq.Header.Get("User-Agent") == "" {
-		httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
-	}
-	if httpReq.Header.Get("Accept") == "" {
-		httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	}
-	if httpReq.Header.Get("Accept-Language") == "" {
-		httpReq.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-	}
-	if httpReq.Header.Get("Accept-Encoding") == "" {
-		httpReq.Header.Set("Accept-Encoding", "gzip, deflate, br")
-	}
-
-	// Execute via HTTP/2 transport (Chrome uses h2 for HTTPS)
-	resp, err := transport.RoundTrip(httpReq)
-	if err != nil {
-		// Fallback to HTTP/1.1 over utls
-		return c.requestHTTP1(method, reqURL, headers, body, host, port)
-	}
-	defer resp.Body.Close()
-
-	// Read and decompress body
-	respBody := c.readBody(resp)
-
-	// Parse headers and cookies
-	respHeaders := make(map[string]string)
-	cookies := make(map[string]string)
-	for k, v := range resp.Header {
-		if len(v) > 0 {
-			respHeaders[k] = v[0]
-		}
-		if strings.EqualFold(k, "Set-Cookie") {
-			for _, cookie := range v {
-				cookieParts := strings.SplitN(cookie, ";", 2)
-				if len(cookieParts) > 0 {
-					eqIdx := strings.Index(cookieParts[0], "=")
-					if eqIdx > 0 {
-						cookies[strings.TrimSpace(cookieParts[0][:eqIdx])] = strings.TrimSpace(cookieParts[0][eqIdx+1:])
-					}
-				}
-			}
-		}
-	}
-
-	return &Response{
-		Status:  resp.StatusCode,
-		Headers: respHeaders,
-		Body:    respBody,
-		Cookies: cookies,
-	}, nil
-}
-
-// readBody decompresses the response body based on Content-Encoding.
-func (c *UTLSClient) readBody(resp *http.Response) string {
-	encoding := resp.Header.Get("Content-Encoding")
-	var reader io.Reader = resp.Body
-
-	switch encoding {
-	case "gzip":
-		gr, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			data, _ := io.ReadAll(resp.Body)
-			return string(data)
-		}
-		reader = gr
-		defer gr.Close()
-	case "br":
-		reader = brotli.NewReader(resp.Body)
-	}
-
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return ""
-	}
-	return string(data)
+	return c.requestHTTP1(method, reqURL, headers, body, host, port)
 }
 
 // requestHTTP1 is the HTTP/1.1 fallback when HTTP/2 fails. It sends a raw
