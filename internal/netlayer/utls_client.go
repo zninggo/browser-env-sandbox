@@ -112,8 +112,14 @@ func (c *UTLSClient) Request(method, reqURL string, headers map[string]string, b
 	}
 
 	// Fallback: HTTP/1.1 over utls (still Chrome TLS fingerprint).
-	parsedURL, _ := url.Parse(reqURL)
+	parsedURL, err := url.Parse(reqURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid request URL %q: %w", reqURL, err)
+	}
 	host := parsedURL.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("request URL %q has no host", reqURL)
+	}
 	port := parsedURL.Port()
 	if port == "" {
 		if parsedURL.Scheme == "https" {
