@@ -107,26 +107,48 @@
     parser.toString = function() { return this.href; };
     return parser;
   };
+  // Bug 30 fix: append preserves multiple values; set overwrites.
+  // Internal storage: { name: [val1, val2] }
   window.URLSearchParams = function(init) {
     var params = {};
     if (typeof init === 'string') {
       if (init[0] === '?') init = init.slice(1);
       init.split('&').forEach(function(pair) {
         var kv = pair.split('=');
-        params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || '');
+        var k = decodeURIComponent(kv[0]);
+        var v = decodeURIComponent(kv[1] || '');
+        if (params[k] === undefined) params[k] = [];
+        params[k].push(v);
       });
     }
-    this.get = function(name) { return params[name] !== undefined ? params[name] : null; };
-    this.getAll = function(name) { return params[name] !== undefined ? [params[name]] : []; };
+    this.get = function(name) { return params[name] !== undefined ? params[name][0] : null; };
+    this.getAll = function(name) { return params[name] !== undefined ? params[name].slice() : []; };
     this.has = function(name) { return params[name] !== undefined; };
-    this.set = function(name, value) { params[name] = value; };
-    this.append = function(name, value) { params[name] = value; };
+    this.set = function(name, value) { params[name] = [value]; };
+    this.append = function(name, value) {
+      if (params[name] === undefined) params[name] = [];
+      params[name].push(value);
+    };
     this.delete = function(name) { delete params[name]; };
     this.toString = function() {
-      return Object.keys(params).map(function(k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+      var parts = [];
+      Object.keys(params).forEach(function(k) {
+        params[k].forEach(function(v) { parts.push(k + '=' + encodeURIComponent(v)); });
+      });
+      return parts.join('&');
     };
-    this.forEach = function(cb) { Object.keys(params).forEach(function(k) { cb(params[k], k); }); };
-    this.entries = function() { return Object.keys(params).map(function(k) { return [k, params[k]]; }); };
+    this.forEach = function(cb) {
+      Object.keys(params).forEach(function(k) {
+        params[k].forEach(function(v) { cb(v, k); });
+      });
+    };
+    this.entries = function() {
+      var result = [];
+      Object.keys(params).forEach(function(k) {
+        params[k].forEach(function(v) { result.push([k, v]); });
+      });
+      return result;
+    };
   };
 
   // ── Blob / URL.createObjectURL ──

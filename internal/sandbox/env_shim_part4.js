@@ -26,6 +26,10 @@
   function _besRegisterElement(el) {
     if (el && el.id) _besElementRegistry[el.id] = el;
     _besAllElements.push(el);
+    // Bug 44 fix: cap growth to prevent unbounded memory
+    if (_besAllElements.length > 10000) {
+      _besAllElements = _besAllElements.slice(-5000);
+    }
   }
 
   function _besParseSelector(sel) {
@@ -196,8 +200,15 @@
         // Search within this parsed tree only
         return _besFindByIdInTree(root, id);
       },
-      querySelector: function(sel) { return document.querySelector(sel); },
-      querySelectorAll: function(sel) { return document.querySelectorAll(sel); },
+      // Bug 11 fix: querySelector/querySelectorAll should search within the
+      // parsed DOM tree, not delegate to global document (which crosses docs).
+      querySelector: function(sel) {
+        var results = _besQueryAll(root, _besParseSelector(sel));
+        return results.length > 0 ? results[0] : null;
+      },
+      querySelectorAll: function(sel) {
+        return _besQueryAll(root, _besParseSelector(sel));
+      },
       getElementsByTagName: function(tag) {
         var upper = tag.toUpperCase();
         return _besFindByTagInTree(root, upper);

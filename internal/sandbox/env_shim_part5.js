@@ -95,7 +95,50 @@
     window.File = function(bits, name, opts) { this.name = name || ''; this.size = 0; this.type = (opts && opts.type) || ''; this[Symbol.toStringTag] = 'File'; };
   }
   if (typeof FileReader === 'undefined') {
-    window.FileReader = function() { this.readyState = 0; this.result = null; this[Symbol.toStringTag] = 'FileReader'; };
+    window.FileReader = function() { this.readyState = 0; this.result = null; this.onload = null; this.onerror = null; this[Symbol.toStringTag] = 'FileReader'; };
+    window.FileReader.EMPTY = 0; window.FileReader.LOADING = 1; window.FileReader.DONE = 2;
+    window.FileReader.prototype.readAsArrayBuffer = function(blob) {
+      var self = this;
+      self.readyState = 1;
+      setTimeout(function() {
+        try {
+          var bytes = blob && blob._besBytes ? blob._besBytes() : new Uint8Array(0);
+          var ab = new ArrayBuffer(bytes.length);
+          new Uint8Array(ab).set(bytes);
+          self.result = ab;
+          self.readyState = 2;
+          if (self.onload) self.onload({ target: self });
+        } catch(e) { self.readyState = 2; if (self.onerror) self.onerror(e); }
+      }, 0);
+    };
+    window.FileReader.prototype.readAsText = function(blob, encoding) {
+      var self = this;
+      self.readyState = 1;
+      setTimeout(function() {
+        try {
+          var bytes = blob && blob._besBytes ? blob._besBytes() : new Uint8Array(0);
+          self.result = __besBytesToUTF8 ? __besBytesToUTF8(bytes) : '';
+          for (var i = 0, s = ''; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+          if (!self.result) self.result = s;
+          self.readyState = 2;
+          if (self.onload) self.onload({ target: self });
+        } catch(e) { self.readyState = 2; if (self.onerror) self.onerror(e); }
+      }, 0);
+    };
+    window.FileReader.prototype.readAsDataURL = function(blob) {
+      var self = this;
+      self.readyState = 1;
+      setTimeout(function() {
+        try {
+          var bytes = blob && blob._besBytes ? blob._besBytes() : new Uint8Array(0);
+          var b64 = btoa(String.fromCharCode.apply(null, bytes));
+          self.result = 'data:' + (blob && blob.type || 'application/octet-stream') + ';base64,' + b64;
+          self.readyState = 2;
+          if (self.onload) self.onload({ target: self });
+        } catch(e) { self.readyState = 2; if (self.onerror) self.onerror(e); }
+      }, 0);
+    };
+    window.FileReader.prototype.abort = function() { this.readyState = 2; };
   }
   if (typeof FileList === 'undefined') {
     window.FileList = function() { this[Symbol.toStringTag] = 'FileList'; };

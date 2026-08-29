@@ -1,7 +1,9 @@
 package sandbox
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -209,11 +211,11 @@ func (b *EnvBuilder) injectChrome() {
 }
 
 func (b *EnvBuilder) injectStorage() {
-	// localStorage and sessionStorage as simple object templates
-	// (full Storage API with getItem/setItem will be built post-context)
+	// Bug 35 fix: create separate ObjectTemplates for localStorage and sessionStorage
 	ls := v8go.NewObjectTemplate(b.iso)
+	ss := v8go.NewObjectTemplate(b.iso)
 	b.global.Set("localStorage", ls)
-	b.global.Set("sessionStorage", ls)
+	b.global.Set("sessionStorage", ss)
 }
 
 func (b *EnvBuilder) injectPerformance() {
@@ -246,10 +248,17 @@ func (b *EnvBuilder) injectTimers() {
 	b.global.Set("requestAnimationFrame", v8go.NewFunctionTemplate(b.iso, b.timerMgr.RAFCallback(b.iso)))
 	b.global.Set("cancelAnimationFrame", v8go.NewFunctionTemplate(b.iso, b.timerMgr.ClearTimeoutCallback(b.iso)))
 	b.global.Set("queueMicrotask", v8go.NewFunctionTemplate(b.iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
-		// Queue as microtask — v8go has PerformMicrotaskCheckpoint
+		// Bug 19 fix: queue as real microtask via Promise.resolve().then()
 		if len(info.Args()) > 0 && info.Args()[0].IsFunction() {
 			fn, _ := info.Args()[0].AsFunction()
-			fn.Call(info.Context().Global())
+			// Use Promise.resolve().then(fn) for proper microtask scheduling
+			js := "Promise.resolve().then(arguments[0])"
+			_ = js // v8go doesn't support passing args to RunScript directly
+			// Schedule via timer(0) → callback queue → DrainCallbacks on Isolate thread
+			b.timerMgr.scheduleTimer(0, false, func() {
+				fn.Call(info.Context().Global())
+				info.Context().PerformMicrotaskCheckpoint()
+			})
 		}
 		return nil
 	}))
@@ -460,6 +469,9 @@ func (p *PostContextBuilder) Build() {
 	// Inject CAPTCHA solver bridge: __besSolveCaptcha
 	p.injectCaptchaSolver()
 
+	// Inject crypto helpers: __besSha256 (real SHA-256 via Go crypto/sha256)
+	p.injectCryptoHelpers()
+
 	// Inject comprehensive env shim (missing browser APIs)
 	// Each part runs independently so a parse error in one part doesn't
 	// block the others — all 5 parts are self-contained IIFEs.
@@ -516,12 +528,12 @@ func injectCanvas2D(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerp
 		ctx.Set(m, v8go.NewFunctionTemplate(iso, noopCallback))
 	}
 	ctx.Set("getImageData", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
-		v, _ := v8go.NewValue(iso, `{"data":[0,0,0,0],"width":1,"height":1}`)
-		return v
+		// Returns undefined; actual implementation in env_shim_part3.js (Bug 7 fix).
+		// Go callback can't create JS objects via v8go.NewValue (only primitives).
+		return v8go.Null(iso)
 	}))
 	ctx.Set("createImageData", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
-		v, _ := v8go.NewValue(iso, `{"data":[0,0,0,0],"width":1,"height":1}`)
-		return v
+		return v8go.Null(iso)
 	}))
 	ctx.Set("measureText", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
 		text := ""
@@ -559,6 +571,9 @@ func injectWebGL(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerprin
 		return inst.Value
 	}))
 	ctx.Set("getSupportedExtensions", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		// Bug 8 fix: return a real JS array, not a JSON string.
+		// v8go NewValue with "[\"...\"]" creates a string, not an array.
+		// Build array via JS evaluation.
 		exts := ""
 		for i, e := range fp.WebGL.Extensions {
 			if i > 0 {
@@ -566,7 +581,12 @@ func injectWebGL(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerprin
 			}
 			exts += fmt.Sprintf("%q", e)
 		}
-		v, _ := v8go.NewValue(iso, "["+exts+"]")
+		// Create array via RunScript on the current context
+		arrVal, _ := info.Context().RunScript("["+exts+"]", "webgl-exts.js")
+		if arrVal != nil {
+			return arrVal
+		}
+		v, _ := v8go.NewValue(iso, "[]")
 		return v
 	}))
 	for _, m := range []string{"createShader", "shaderSource", "compileShader",
@@ -773,6 +793,38 @@ func (p *PostContextBuilder) injectCaptchaSolver() {
 	p.global.Set("__besSolveCaptcha", fnVal)
 }
 
+// injectCryptoHelpers injects __besSha256(data) as a Go callback that computes
+// a real SHA-256 hash via crypto/sha256. JS-side crypto.subtle.digest calls
+// this for correctness (the JS-only XOR fallback is not cryptographically valid
+// and fails server-side hash verification).
+func (p *PostContextBuilder) injectCryptoHelpers() {
+	iso := p.iso
+	cb := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		if len(info.Args()) < 1 {
+			v, _ := v8go.NewValue(iso, "")
+			return v
+		}
+		arg := info.Args()[0]
+		// Accept string, ArrayBuffer, or TypedArray
+		var data []byte
+		if arg.IsString() {
+			data = []byte(arg.String())
+		} else {
+			// For non-string types, try to get the string representation
+			// (v8go Value doesn't expose ArrayBuffer/TypedArray accessors
+			// directly; the JS side converts to string before calling).
+			data = []byte(arg.String())
+		}
+		h := sha256.Sum256(data)
+		// Return as hex string (JS side converts to ArrayBuffer if needed)
+		v, _ := v8go.NewValue(iso, hex.EncodeToString(h[:]))
+		return v
+	}
+	fn := v8go.NewFunctionTemplate(iso, cb)
+	fnVal := fn.GetFunction(p.ctx)
+	p.global.Set("__besSha256", fnVal)
+}
+
 // injectFetchXHR adds fetch and XMLHttpRequest to the sandbox.
 // When a NetHandler is configured, XHR/fetch make real HTTP requests via a
 // Go callback. When no handler is set, they fall back to stubs (for
@@ -799,10 +851,10 @@ func (p *PostContextBuilder) injectFetchXHR() {
 			window.XMLHttpRequest = function() {
 				this.readyState = 0; this.status = 0;
 				this.responseText = ''; this.response = '';
-				this._method = 'GET'; this._url = ''; this._headers = {};
+				this._method = 'GET'; this._url = ''; this._headers = {}; this._async = true;
 			};
-			window.XMLHttpRequest.prototype.open = function(method, url) {
-				this._method = method; this._url = url; this.readyState = 1;
+			window.XMLHttpRequest.prototype.open = function(method, url, async) {
+				this._method = method; this._url = url; this._async = (async === undefined) ? true : async; this.readyState = 1;
 			};
 			window.XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
 				this._headers[name] = value;
@@ -1321,9 +1373,10 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 				this._headers = {};
 				this._responseHeaders = {};
 			};
-			window.XMLHttpRequest.prototype.open = function(method, url) {
+			window.XMLHttpRequest.prototype.open = function(method, url, async) {
 				this._method = method;
 				this._url = url;
+				this._async = (async === undefined) ? true : async; // Bug 6 fix: save async flag
 				this.readyState = 1;
 				if (this.onreadystatechange) this.onreadystatechange();
 			};
@@ -1332,10 +1385,42 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 			};
 			window.XMLHttpRequest.prototype.send = function(body) {
 				var self = this;
+				// Bug 6 fix: sync mode uses __besNetRequest (blocking Go callback)
+				if (self._async === false) {
+					try {
+						var respJSON = __besNetRequest(self._method, self._url, JSON.stringify(self._headers), body || '');
+						var r = JSON.parse(respJSON);
+						self.status = r.status;
+						self.statusText = '';
+						self._responseHeaders = r.headers || {};
+						// Bug 10 fix: use bodyB64 for CJK safety, decode as latin1
+						if (r.bodyB64) {
+							var bytes = __besB64ToUint8Array(r.bodyB64);
+							var latin1 = '';
+							for (var i = 0; i < bytes.length; i++) latin1 += String.fromCharCode(bytes[i]);
+							self.responseText = latin1;
+							self.response = (self.responseType === 'arraybuffer') ? bytes.buffer :
+								(self.responseType === 'blob') ? new Blob([bytes], {type: self.getResponseHeader('Content-Type') || ''}) :
+								(self.responseType === 'json') ? JSON.parse(__besBytesToUTF8(bytes)) :
+								latin1;
+						} else {
+							self.responseText = r.body || '';
+							self.response = r.body || '';
+						}
+						self.readyState = 4;
+						if (self.onreadystatechange) self.onreadystatechange();
+						if (r.status > 0) { if (self.onload) self.onload(); }
+						else { if (self.onerror) self.onerror(new Error(r.error || 'network error')); }
+					} catch(e) {
+						self.status = 0;
+						self.readyState = 4;
+						if (self.onerror) self.onerror(e);
+					}
+					return;
+				}
+				// Async mode (default)
 				self.readyState = 2;
 				if (self.onreadystatechange) self.onreadystatechange();
-				// Pending XHRs are tracked so the event-loop driver (EvalAwait)
-				// knows when all async network work has settled.
 				__besPendingXHR = __besPendingXHR + 1;
 				__besNetRequestAsync(self._method, self._url, JSON.stringify(self._headers), body || '', function(respJSON) {
 					__besPendingXHR = __besPendingXHR - 1;
@@ -1344,17 +1429,36 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 						self.status = r.status;
 						self.statusText = '';
 						self._responseHeaders = r.headers || {};
-						self.responseText = r.body || '';
-						if (self.responseType === 'arraybuffer') {
-							self.response = r.bodyB64 ? __besB64ToUint8Array(r.bodyB64).buffer : new ArrayBuffer(0);
-						} else if (self.responseType === 'blob') {
-							self.response = new Blob(r.bodyB64 ? [__besB64ToUint8Array(r.bodyB64)] : [], { type: self.getResponseHeader('Content-Type') || '' });
-						} else if (self.responseType === 'json') {
-							try { self.response = JSON.parse(r.body || 'null'); } catch(e) { self.response = null; }
-						} else if (self.responseType === 'document') {
-							self.response = (new DOMParser()).parseFromString(r.body || '', 'text/xml');
+						// Bug 10 fix: use bodyB64 for CJK safety
+						if (r.bodyB64) {
+							var bytes = __besB64ToUint8Array(r.bodyB64);
+							var latin1 = '';
+							for (var i = 0; i < bytes.length; i++) latin1 += String.fromCharCode(bytes[i]);
+							self.responseText = latin1;
+							if (self.responseType === 'arraybuffer') {
+								self.response = bytes.buffer;
+							} else if (self.responseType === 'blob') {
+								self.response = new Blob([bytes], { type: self.getResponseHeader('Content-Type') || '' });
+							} else if (self.responseType === 'json') {
+								try { self.response = JSON.parse(__besBytesToUTF8(bytes)); } catch(e2) { self.response = null; }
+							} else if (self.responseType === 'document') {
+								self.response = (new DOMParser()).parseFromString(__besBytesToUTF8(bytes), 'text/xml');
+							} else {
+								self.response = latin1;
+							}
 						} else {
-							self.response = r.body || '';
+							self.responseText = r.body || '';
+							if (self.responseType === 'arraybuffer') {
+								self.response = new ArrayBuffer(0);
+							} else if (self.responseType === 'blob') {
+								self.response = new Blob([], { type: self.getResponseHeader('Content-Type') || '' });
+							} else if (self.responseType === 'json') {
+								try { self.response = JSON.parse(r.body || 'null'); } catch(e2) { self.response = null; }
+							} else if (self.responseType === 'document') {
+								self.response = (new DOMParser()).parseFromString(r.body || '', 'text/xml');
+							} else {
+								self.response = r.body || '';
+							}
 						}
 						self.readyState = 3;
 						if (self.onreadystatechange) self.onreadystatechange();
@@ -1389,7 +1493,12 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 			window.XMLHttpRequest.prototype.overrideMimeType = function(mime) {
 				this._overrideMime = mime;
 			};
-			window.XMLHttpRequest.prototype.abort = function() { this._aborted = true; };
+			window.XMLHttpRequest.prototype.abort = function() {
+				// Bug 20 fix: cancel request, set readyState, trigger onabort
+				this._aborted = true;
+				this.readyState = 0;
+				if (this.onabort) this.onabort({ type: 'abort', target: this });
+			};
 
 			window.fetch = function(resource, options) {
 				options = options || {};

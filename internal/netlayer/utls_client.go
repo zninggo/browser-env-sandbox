@@ -3,6 +3,7 @@ package netlayer
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -102,13 +103,21 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, host, port string) (net.Conn,
 // It first tries requestH2 — a manually-constructed HTTP/2 client that
 // controls every frame byte (SETTINGS, WINDOW_UPDATE, HEADERS with PRIORITY,
 // pseudo-header order) to match real Chrome's akamai fingerprint exactly.
-// If HTTP/2 fails (e.g. ALPN doesn't negotiate h2), it falls back to HTTP/1.1
-// over utls.
+// It falls back to HTTP/1.1 over utls only when ALPN does not negotiate h2;
+// all other errors are returned directly to avoid re-sending the request.
 func (c *UTLSClient) Request(method, reqURL string, headers map[string]string, body []byte) (*Response, error) {
 	// Primary path: HTTP/2 with Chrome-precise frame fingerprinting.
 	resp, err := c.requestH2(context.Background(), method, reqURL, headers, body)
 	if err == nil {
 		return resp, nil
+	}
+
+	// Only fall back to HTTP/1.1 when the server did not negotiate h2 via ALPN.
+	// Any other error (timeout, RST_STREAM, network failure) is returned as-is —
+	// re-sending on those would silently replay non-idempotent requests (e.g. a
+	// POST that already executed on the server).
+	if !errors.Is(err, errNoH2ALPN) {
+		return nil, err
 	}
 
 	// Fallback: HTTP/1.1 over utls (still Chrome TLS fingerprint).

@@ -26,11 +26,16 @@
         plugin[j] = { type: mimeData[j].type, suffixes: mimeData[j].suffixes, description: mimeData[j].description, enabledPlugin: plugin };
       }
       plugin.item = function(idx) { return this[idx] || null; };
-      plugin.namedItem = function(name) { return null; };
+      plugin.namedItem = function(name) { return this[name] || null; };
       arr[i] = plugin;
     }
     arr.item = function(idx) { return this[idx] || null; };
-    arr.namedItem = function(name) { return null; };
+    arr.namedItem = function(name) {
+      for (var i = 0; i < pluginData.length; i++) {
+        if (this[i] && this[i].name === name) return this[i];
+      }
+      return null;
+    };
     arr.refresh = function() {};
     Object.defineProperty(arr, 'length', { value: pluginData.length });
     return arr;

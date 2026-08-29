@@ -68,6 +68,8 @@ func (cs *CookieStore) String() string {
 		}
 		parts = append(parts, c.Name+"="+c.Value)
 	}
+	// Bug 34 fix: sort for stable cookie order (browsers sort by path length then creation time)
+	sort.Strings(parts)
 	return strings.Join(parts, "; ")
 }
 

@@ -229,10 +229,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		for _, scriptPath := range req.Preload {
 			content, err := os.ReadFile(scriptPath)
 			if err != nil {
+				s.svc.CloseSession(id)
 				writeError(w, http.StatusInternalServerError, "preload read "+scriptPath+": "+err.Error())
 				return
 			}
 			if err := s.svc.LoadScript(id, scriptPath, string(content)); err != nil {
+				s.svc.CloseSession(id)
 				writeError(w, http.StatusInternalServerError, "preload "+scriptPath+": "+err.Error())
 				return
 			}
@@ -240,6 +242,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Init != "" {
 		if _, err := s.svc.Eval(id, req.Init); err != nil {
+			s.svc.CloseSession(id)
 			writeError(w, http.StatusInternalServerError, "init: "+err.Error())
 			return
 		}

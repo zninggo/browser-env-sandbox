@@ -2,6 +2,7 @@ package fpengine
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -268,20 +269,63 @@ func (kb *KnowledgeBase) SampleOS(rng *seededRNG, preferred string) api.OSProfil
 }
 
 func (kb *KnowledgeBase) SampleGPU(rng *seededRNG, osName string) api.GPUProfile {
-	gpus, ok := kb.GPUs[osName]
-	if !ok || len(gpus) == 0 {
-		gpus = kb.GPUs["windows"] // fallback
+	// Prefer real apify data (773 combos) via runtime loader (JSON or embedded).
+	gpus := CurrentFpRealGPUs()
+	if len(gpus) > 0 {
+		idx := rng.Intn(len(gpus))
+		gpu := gpus[idx]
+		// Filter by OS brand hint: Windows → Direct3D, macOS → Metal, Linux → OpenGL
+		renderer := gpu.Renderer
+		vendor := gpu.Vendor
+		if osName == "macos" && !strings.Contains(renderer, "Metal") {
+			for i := 0; i < 10; i++ {
+				candidate := gpus[rng.Intn(len(gpus))]
+				if strings.Contains(candidate.Renderer, "Metal") {
+					return api.GPUProfile{Vendor: candidate.Vendor, Renderer: candidate.Renderer}
+				}
+			}
+		}
+		if osName == "windows" && strings.Contains(renderer, "Metal") {
+			for i := 0; i < 10; i++ {
+				candidate := gpus[rng.Intn(len(gpus))]
+				if strings.Contains(candidate.Renderer, "Direct3D11") {
+					return api.GPUProfile{Vendor: candidate.Vendor, Renderer: candidate.Renderer}
+				}
+			}
+		}
+		return api.GPUProfile{Vendor: vendor, Renderer: renderer}
 	}
-	e := gpus[rng.Intn(len(gpus))]
+	// Fallback to hand-curated matrix
+	fallbackGPUs, ok := kb.GPUs[osName]
+	if !ok || len(fallbackGPUs) == 0 {
+		fallbackGPUs = kb.GPUs["windows"]
+	}
+	e := fallbackGPUs[rng.Intn(len(fallbackGPUs))]
 	return api.GPUProfile{Vendor: e.Vendor, Renderer: e.Renderer}
 }
 
 func (kb *KnowledgeBase) SampleScreen(rng *seededRNG, osName string) map[string]any {
-	screens, ok := kb.Screens[osName]
-	if !ok || len(screens) == 0 {
-		screens = kb.Screens["windows"]
+	// Prefer real apify data (4569 configs) via runtime loader.
+	screens := CurrentFpRealScreens()
+	if len(screens) > 0 {
+		s := screens[rng.Intn(len(screens))]
+		return map[string]any{
+			"width":       s.Width,
+			"height":      s.Height,
+			"availWidth":  s.AvailWidth,
+			"availHeight": s.AvailHeight,
+			"colorDepth":  s.ColorDepth,
+			"pixelDepth":  s.ColorDepth,
+			"orientation": map[string]any{"type": "landscape-primary", "angle": 0},
+			"availLeft":   0,
+			"availTop":    0,
+		}
 	}
-	e := screens[rng.Intn(len(screens))]
+	fallbackScreens, ok := kb.Screens[osName]
+	if !ok || len(fallbackScreens) == 0 {
+		fallbackScreens = kb.Screens["windows"]
+	}
+	e := fallbackScreens[rng.Intn(len(fallbackScreens))]
 	return map[string]any{
 		"width":       e.Width,
 		"height":      e.Height,
@@ -316,7 +360,7 @@ func (kb *KnowledgeBase) LookupCanvasHash(majorVer int, osName, gpuVendor string
 	key := canvasHashKey(majorVer, osName, gpuVendor)
 	hash := kb.CanvasHashes[key]
 	if hash == "" {
-		hash = syntheticHash("canvas", majorVer, osName, gpuVendor)
+		hash = syntheticCanvasDataURL(majorVer, osName, gpuVendor)
 	}
 	return api.CanvasFP{
 		ToDataURLHash: hash,
@@ -330,29 +374,141 @@ func (kb *KnowledgeBase) LookupAudioHash(majorVer int, osName string) api.AudioF
 	key := audioHashKey(majorVer, osName)
 	hash := kb.AudioHashes[key]
 	if hash == "" {
-		hash = syntheticHash("audio", majorVer, osName, "")
+		// Deterministic 32-hex audio hash (same length as fingerprintjs output)
+		seed := fmt.Sprintf("audio:%d:%s", majorVer, osName)
+		h := sha256.Sum256([]byte(seed))
+		hash = hex.EncodeToString(h[:16]) // 32 hex chars
 	}
 	return api.AudioFP{Hash: hash}
 }
 
-// syntheticHash generates a deterministic hash from the given components.
-// This is NOT a real machine hash — it ensures the fingerprint has a
-// consistent, non-placeholder value until real hashes are collected.
-// Replace CanvasHashes/AudioHashes entries with real values from
-// experiments/collect-hashes.js to use actual machine fingerprints.
-func syntheticHash(prefix string, majorVer int, osName, gpuVendor string) string {
-	data := fmt.Sprintf("%s:%d:%s:%s", prefix, majorVer, osName, gpuVendor)
-	h := sha256.Sum256([]byte(data))
-	return hex.EncodeToString(h[:8]) // 16 hex chars
+// syntheticCanvasDataURL generates a deterministic, realistic-length base64
+// PNG data URL for canvas.toDataURL(). Real Chrome canvas output is 1-3KB of
+// base64; a 16-hex-char hash is an instant red flag for server-side checks.
+//
+// Approach (per fingerprint-suite/camoufox research): no real base64 is stored
+// (it's a cross-session device identifier). Instead we generate a deterministic
+// PNG-like blob from the seed components — same fingerprint → same canvas,
+// different fingerprint → different canvas. The output mimics a minimal valid
+// PNG structure so length and header checks pass.
+func syntheticCanvasDataURL(majorVer int, osName, gpuVendor string) string {
+	// Seed from components
+	seed := fmt.Sprintf("canvas:%d:%s:%s", majorVer, osName, gpuVendor)
+	h := sha256.Sum256([]byte(seed))
+
+	// Build a minimal PNG-like blob: 8-byte signature + IHDR + IDAT + IEND.
+	// Total ~1.2KB base64 — within real Chrome canvas output range.
+	png := make([]byte, 0, 900)
+
+	// PNG signature
+	png = append(png, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+
+	// IHDR chunk (13 bytes data): 280x60, 8-bit RGBA
+	ihdr := make([]byte, 13)
+	ihdr[0], ihdr[1], ihdr[2], ihdr[3] = 0, 0, 1, 0x18 // width=280
+	ihdr[4], ihdr[5], ihdr[6], ihdr[7] = 0, 0, 0, 0x3C // height=60
+	ihdr[8] = 8  // bit depth
+	ihdr[9] = 6  // color type (RGBA)
+	ihdr[10] = 0 // compression
+	ihdr[11] = 0 // filter
+	ihdr[12] = 0 // interlace
+	png = appendChunk(png, 0x49484452, ihdr) // "IHDR"
+
+	// IDAT chunk: deterministic pseudo-random pixel data (deterministic noise
+	// from seed — same approach as camoufox canvas:seed).
+	// 280*60*4 = 67200 bytes raw → deflate to ~800 bytes. We generate ~800
+	// bytes of seed-deterministic data that looks like deflated pixel data.
+	idatData := make([]byte, 820)
+	for i := range idatData {
+		// Mix seed hash bytes deterministically
+		b := h[i%32] ^ h[(i*7+3)%32] ^ byte(i)
+		idatData[i] = b
+	}
+	png = appendChunk(png, 0x49444154, idatData) // "IDAT"
+
+	// IEND chunk (0 bytes data)
+	png = appendChunk(png, 0x49454E44, nil) // "IEND"
+
+	return base64.StdEncoding.EncodeToString(png)
+}
+
+// appendChunk appends a PNG chunk: length(4) + type(4) + data + crc(4)
+func appendChunk(png []byte, chunkType uint32, data []byte) []byte {
+	length := uint32(len(data))
+	png = append(png, byte(length>>24), byte(length>>16), byte(length>>8), byte(length))
+	png = append(png, byte(chunkType>>24), byte(chunkType>>16), byte(chunkType>>8), byte(chunkType))
+	png = append(png, data...)
+	// CRC32 over type+data (simplified — use a fixed CRC, real servers rarely
+	// re-parse the PNG; they check length/header/format, not pixel integrity)
+	crc := crc32Checksum(chunkType, data)
+	png = append(png, byte(crc>>24), byte(crc>>16), byte(crc>>8), byte(crc))
+	return png
+}
+
+// crc32Checksum computes CRC32 (PNG polynomial) over the chunk type + data.
+func crc32Checksum(chunkType uint32, data []byte) uint32 {
+	const poly = 0xEDB88320
+	buf := make([]byte, 4)
+	buf[0] = byte(chunkType >> 24)
+	buf[1] = byte(chunkType >> 16)
+	buf[2] = byte(chunkType >> 8)
+	buf[3] = byte(chunkType)
+	buf = append(buf, data...)
+	crc := uint32(0xFFFFFFFF)
+	for _, b := range buf {
+		crc ^= uint32(b)
+		for i := 0; i < 8; i++ {
+			if crc&1 != 0 {
+				crc = (crc >> 1) ^ poly
+			} else {
+				crc >>= 1
+			}
+		}
+	}
+	return crc ^ 0xFFFFFFFF
 }
 
 func (kb *KnowledgeBase) SampleWindowProps(rng *seededRNG, screen map[string]any) api.WindowProps {
-	osName := "windows"
-	screens, ok := kb.WindowProps[osName]
-	if !ok || len(screens) == 0 {
-		screens = kb.WindowProps["windows"]
+	// Derive window dimensions from the actual screen to ensure consistency.
+	// Invariant: screen.height >= availHeight >= outerHeight >= innerHeight.
+	sw, _ := screen["width"].(int)
+	sh, _ := screen["height"].(int)
+	aw, _ := screen["availWidth"].(int)
+	ah, _ := screen["availHeight"].(int)
+	if aw == 0 {
+		aw = sw
 	}
-	return screens[rng.Intn(len(screens))]
+	if ah == 0 {
+		ah = sh
+	}
+	dpr := 1.0
+	if d, ok := screen["pixelDepth"].(int); ok && d > 0 {
+		// pixelDepth == colorDepth, not DPR; we set DPR from window props
+		_ = d
+	}
+
+	// Outer window: slightly smaller than avail (taskbar/browser chrome).
+	// Inner: outer minus browser chrome (~100px top bar + bookmarks).
+	ow := sw
+	oh := ah
+	if oh > 40 {
+		oh = oh - rng.Intn(20) // small random offset for taskbar variance
+	}
+	iw := ow
+	ih := oh - 100 // browser chrome (address bar + tabs)
+	if ih < 200 {
+		ih = oh * 9 / 10
+	}
+
+	return api.WindowProps{
+		InnerWidth:       iw,
+		InnerHeight:      ih,
+		OuterWidth:       ow,
+		OuterHeight:      oh,
+		DevicePixelRatio: dpr,
+		ScreenX:          0,
+		ScreenY:          0,
+	}
 }
 
 func canvasHashKey(majorVer int, osName, gpuVendor string) string {

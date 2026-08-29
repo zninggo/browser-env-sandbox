@@ -12,14 +12,16 @@ import (
 // TimerManager manages setTimeout/setInterval/requestAnimationFrame
 // within a sandbox session.
 //
-// Timers are registered in Go (via goroutines) and callbacks execute
-// inside the V8 context. This mirrors browser behavior where timers
-// run on the main thread's event loop.
+// Timers are registered in Go (via goroutines) but callbacks are NOT executed
+// directly in the goroutine — V8 Isolates are not thread-safe. Instead,
+// callbacks are queued into a channel and drained on the Isolate thread
+// (during EvalAwait's flush loop via DrainCallbacks).
 type TimerManager struct {
-	mu      sync.Mutex
-	timers  map[int32]*timerEntry
-	nextID  int32
-	stopped bool
+	mu             sync.Mutex
+	timers         map[int32]*timerEntry
+	nextID         int32
+	stopped        bool
+	callbackQueue  chan func()
 }
 
 type timerEntry struct {
@@ -32,12 +34,29 @@ type timerEntry struct {
 // NewTimerManager creates a new timer manager.
 func NewTimerManager() *TimerManager {
 	return &TimerManager{
-		timers: make(map[int32]*timerEntry),
+		timers:        make(map[int32]*timerEntry),
+		callbackQueue: make(chan func(), 256),
 	}
 }
 
 func (tm *TimerManager) allocID() int32 {
 	return atomic.AddInt32(&tm.nextID, 1)
+}
+
+// DrainCallbacks executes all queued callbacks on the current (Isolate) thread.
+// Called by EvalAwait between timer flushes and microtask checkpoints.
+func (tm *TimerManager) DrainCallbacks() {
+	for {
+		select {
+		case cb := <-tm.callbackQueue:
+			func() {
+				defer func() { recover() }()
+				cb()
+			}()
+		default:
+			return
+		}
+	}
 }
 
 // SetTimeoutCallback returns a v8go FunctionCallback for setTimeout.
@@ -128,6 +147,8 @@ func (tm *TimerManager) ClearTimeoutCallback(iso *v8go.Isolate) v8go.FunctionCal
 }
 
 // scheduleTimer registers a timer and starts a goroutine.
+// The goroutine does NOT call the callback directly — it queues it into
+// callbackQueue for DrainCallbacks to execute on the Isolate thread.
 func (tm *TimerManager) scheduleTimer(delay time.Duration, interval bool, cb func()) int32 {
 	tm.mu.Lock()
 	if tm.stopped {
@@ -153,7 +174,12 @@ func (tm *TimerManager) scheduleTimer(delay time.Duration, interval bool, cb fun
 					if entry.stopped {
 						return
 					}
-					cb()
+					// Queue callback for Isolate-thread execution (Bug 2 fix)
+					select {
+					case tm.callbackQueue <- cb:
+					default:
+						// queue full, skip this tick
+					}
 				case <-entry.stop:
 					return
 				}
@@ -164,7 +190,12 @@ func (tm *TimerManager) scheduleTimer(delay time.Duration, interval bool, cb fun
 				if entry.stopped {
 					return
 				}
-				cb()
+				// Queue callback for Isolate-thread execution (Bug 2 fix)
+				select {
+				case tm.callbackQueue <- cb:
+				default:
+					// queue full, drop callback
+				}
 				tm.mu.Lock()
 				delete(tm.timers, id)
 				tm.mu.Unlock()

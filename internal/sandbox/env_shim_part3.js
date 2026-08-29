@@ -175,13 +175,35 @@
     Object.defineProperty(window.crypto, 'subtle', {
       value: {
         digest: function(algo, data) {
-          // Return a simple hash (not cryptographically correct, but won't crash)
-          var bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
-          var hash = new Uint8Array(32);
-          for (var i = 0; i < bytes.length; i++) {
-            hash[i % 32] ^= bytes[i];
+          // Real SHA-256 via Go callback __besSha256 (injectCryptoHelpers).
+          // Go side accepts string; JS converts ArrayBuffer/TypedArray → string
+          // (latin1: byte value == charCodeAt) before calling.
+          try {
+            var input;
+            if (typeof data === 'string') {
+              input = data;
+            } else if (data instanceof ArrayBuffer) {
+              var u8 = new Uint8Array(data);
+              input = '';
+              for (var i = 0; i < u8.length; i++) input += String.fromCharCode(u8[i]);
+            } else if (data && typeof data.length === 'number') {
+              // TypedArray
+              input = '';
+              for (var i = 0; i < data.length; i++) input += String.fromCharCode(data[i]);
+            } else {
+              input = String(data);
+            }
+            var hexStr = __besSha256(input);
+            // Convert hex → ArrayBuffer (32 bytes)
+            var buf = new ArrayBuffer(32);
+            var view = new Uint8Array(buf);
+            for (var i = 0; i < 32; i++) {
+              view[i] = parseInt(hexStr.substr(i * 2, 2), 16);
+            }
+            return Promise.resolve(buf);
+          } catch(e) {
+            return Promise.reject(e);
           }
-          return Promise.resolve(hash.buffer);
         },
         encrypt: function() { return Promise.reject(new Error('Not supported')); },
         decrypt: function() { return Promise.reject(new Error('Not supported')); },
@@ -382,5 +404,178 @@
   delete window.exports;
   delete window.__dirname;
   delete window.__filename;
+
+  // ════════════════════════════════════════════════════════════════
+  // 通用补环境增强（DTraitSDK / challenge-template / bdms 依赖）
+  // ════════════════════════════════════════════════════════════════
+
+  // ── TypedArray iterator polyfill ──
+  // DTraitSDK (dtrait-core.js 模块 8254) 依赖 Uint8Array.prototype[Symbol.iterator]，
+  // 部分 V8 构建中 TypedArray prototype 缺 values/keys/entries/Symbol.iterator，
+  // 导致 "Cannot convert undefined or null to object"。
+  // 只在缺失时补，不覆盖 V8 原生实现。
+  var _taCtors = ['Int8Array','Uint8Array','Uint8ClampedArray','Int16Array','Uint16Array','Int32Array','Uint32Array','Float32Array','Float64Array','BigInt64Array','BigUint64Array'];
+  _taCtors.forEach(function(name) {
+    var Ctor = window[name];
+    if (!Ctor || !Ctor.prototype) return;
+    var proto = Ctor.prototype;
+    if (typeof proto.values !== 'function') {
+      proto.values = function() {
+        var i = 0, arr = this;
+        return { next: function() { return i < arr.length ? { value: arr[i++], done: false } : { value: undefined, done: true }; } };
+      };
+    }
+    if (typeof proto.keys !== 'function') {
+      proto.keys = function() {
+        var i = 0, arr = this;
+        return { next: function() { return i < arr.length ? { value: i++, done: false } : { value: undefined, done: true }; } };
+      };
+    }
+    if (typeof proto.entries !== 'function') {
+      proto.entries = function() {
+        var i = 0, arr = this;
+        return { next: function() { return i < arr.length ? { value: [i, arr[i++]], done: false } : { value: undefined, done: true }; } };
+      };
+    }
+    if (typeof proto[Symbol.iterator] !== 'function') {
+      proto[Symbol.iterator] = proto.values;
+    }
+  });
+
+  // ── crypto.getRandomValues: 真正填充随机字节 ──
+  // Go 侧的 injectCrypto 原样返回输入（不填字节），SDK 生成 nonce/IV 时拿到全 0。
+  // 用 Math.random 填充——非密码学安全，但满足 SDK 格式需求且不崩。
+  if (window.crypto && typeof crypto.getRandomValues === 'function') {
+    var _origGetRandomValues = crypto.getRandomValues.bind(crypto);
+    crypto.getRandomValues = function(arr) {
+      if (!arr || typeof arr.length !== 'number') {
+        throw new TypeError('getRandomValues: argument is not a TypedArray');
+      }
+      for (var i = 0; i < arr.length; i++) {
+        arr[i] = Math.floor(Math.random() * 256);
+      }
+      return arr;
+    };
+    try { nativeFns.add(crypto.getRandomValues); } catch(e) {}
+  }
+
+  // ── localStorage / sessionStorage: 完整 Storage API ──
+  // Go 侧 injectStorage 只设空 ObjectTemplate，无 getItem/setItem。
+  // SDK 存储会话状态（sdk_source_info / bit_env 等）需要完整接口。
+  function _besMakeStorage() {
+    var store = Object.create(null);
+    return {
+      get length() { return Object.keys(store).length; },
+      key: function(i) { var keys = Object.keys(store); return i >= 0 && i < keys.length ? keys[i] : null; },
+      getItem: function(name) { return Object.prototype.hasOwnProperty.call(store, String(name)) ? store[String(name)] : null; },
+      setItem: function(name, value) { store[String(name)] = String(value); },
+      removeItem: function(name) { delete store[String(name)]; },
+      clear: function() { store = Object.create(null); },
+    };
+  }
+  try { Object.defineProperty(window, 'localStorage', { value: _besMakeStorage(), configurable: true }); } catch(e) {}
+  try { Object.defineProperty(window, 'sessionStorage', { value: _besMakeStorage(), configurable: true }); } catch(e) {}
+
+  // ── iframe.contentWindow / contentDocument ──
+  // challenge-template.js 的环境采集器在 iframe.contentWindow 里跑（拿"干净"环境），
+  // createElement('iframe') 返回的 stub 无 contentWindow → 直接崩。
+  // contentWindow 指回 window（globalThis），contentDocument 指回 document。
+  var _origCE_forIframe = document.createElement;
+  document.createElement = function(tagName) {
+    var el = _origCE_forIframe.call(document, tagName);
+    if (!el) return el;
+    tagName = String(tagName).toLowerCase();
+    if (tagName === 'iframe') {
+      Object.defineProperty(el, 'contentWindow', { value: window, configurable: true });
+      Object.defineProperty(el, 'contentDocument', { value: document, configurable: true });
+      try { nativeFns.add; } catch(e) {}
+    }
+    return el;
+  };
+
+  // ── performance.timeOrigin + now() 真实递增值 ──
+  // Go 侧 injectPerformance 的 now() 恒返回 0，无 timeOrigin。
+  // 指纹采集器用 performance.now() 做时间测量，恒 0 异常。
+  if (window.performance) {
+    var _perfOrigin = (typeof performance.timeOrigin === 'number') ? performance.timeOrigin : (Date.now() - 1000);
+    if (typeof performance.timeOrigin !== 'number') {
+      try { Object.defineProperty(performance, 'timeOrigin', { value: _perfOrigin, configurable: true }); } catch(e) {}
+    }
+    performance.now = function() { return Date.now() - _perfOrigin; };
+    try { nativeFns.add(performance.now); } catch(e) {}
+  }
+
+  // ── MessageChannel: real port1↔port2 messaging (Bug 9 fix) ──
+  // Go-side stub uses same port object for port1/port2 with noop postMessage.
+  // Override with independent ports where postMessage triggers onmessage on
+  // the opposite port (via setTimeout(0) for async delivery).
+  window.MessageChannel = function() {
+    var port1 = { onmessage: null, _other: null, closed: false };
+    var port2 = { onmessage: null, _other: null, closed: false };
+    port1._other = port2;
+    port2._other = port1;
+    port1.postMessage = function(data) {
+      if (this.closed || !this._other || this._other.closed) return;
+      var target = this._other;
+      var msg = { data: data };
+      setTimeout(function() {
+        if (target.onmessage) target.onmessage(msg);
+      }, 0);
+    };
+    port2.postMessage = function(data) {
+      if (this.closed || !this._other || this._other.closed) return;
+      var target = this._other;
+      var msg = { data: data };
+      setTimeout(function() {
+        if (target.onmessage) target.onmessage(msg);
+      }, 0);
+    };
+    port1.close = function() { this.closed = true; };
+    port2.close = function() { this.closed = true; };
+    port1.start = function() {};
+    port2.start = function() {};
+    this.port1 = port1;
+    this.port2 = port2;
+  };
+
+  // ── Canvas 2D getImageData/createImageData fix (Bug 7) ──
+  // Go callback can't create JS objects (v8go NewValue only accepts primitives).
+  // Override getContext to wrap the 2d context with JS-side getImageData/createImageData.
+  try {
+    var _origCE_canvas = document.createElement;
+    document.createElement = function(tagName) {
+      var el = _origCE_canvas.call(document, tagName);
+      if (el && typeof tagName === 'string' && tagName.toLowerCase() === 'canvas') {
+        var _origGC = el.getContext;
+        el.getContext = function(type) {
+          var ctx = _origGC.call(this, type);
+          if (ctx && type === '2d') {
+            // Bug 7 fix: real getImageData with proper Uint8ClampedArray
+            ctx.getImageData = function(x, y, w, h) {
+              w = w || 1; h = h || 1;
+              if (w < 1) w = 1; if (h < 1) h = 1;
+              return {
+                data: new Uint8ClampedArray(w * h * 4),
+                width: w,
+                height: h,
+              };
+            };
+            ctx.createImageData = function(w, h) {
+              if (arguments.length === 1) { h = w; }
+              w = w || 1; h = h || 1;
+              if (w < 1) w = 1; if (h < 1) h = 1;
+              return {
+                data: new Uint8ClampedArray(w * h * 4),
+                width: w,
+                height: h,
+              };
+            };
+          }
+          return ctx;
+        };
+      }
+      return el;
+    };
+  } catch(e) {}
 
 })();

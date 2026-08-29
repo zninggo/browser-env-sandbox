@@ -67,8 +67,13 @@ func (c *QUICClient) SetProxy(proxyURL string) {
 }
 func (c *QUICClient) SetTimeout(d time.Duration) { c.timeout = d; c.client.Timeout = d }
 
-// CheckAvailable returns true — H3/QUIC support is built-in.
-func (c *QUICClient) CheckAvailable() bool { return true }
+// CheckAvailable reports whether real H3/QUIC support is usable.
+//
+// UNIMPLEMENTED: the current QUICClient only stuffs "h3" into the ALPN of a
+// TCP-based http.Transport and never actually negotiates QUIC / HTTP/3 (no
+// QUIC transport parameters, no Alt-Svc-driven QUIC dialing). It returns false
+// so callers select the utls HTTP/2 path instead of this fake H3 client.
+func (c *QUICClient) CheckAvailable() bool { return false }
 
 // Backend returns the transport name for logging.
 func (c *QUICClient) Backend() string { return "quic-h3" }

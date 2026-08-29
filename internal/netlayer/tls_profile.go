@@ -1,5 +1,7 @@
 package netlayer
 
+import "sync/atomic"
+
 // TLSProfile represents a TLS fingerprint configuration for a specific
 // browser version. Used to match JA3/JA4 fingerprints with the UA.
 //
@@ -109,7 +111,7 @@ type ProxyConfig struct {
 // ProxyPool manages a pool of proxies for session-unique assignment.
 type ProxyPool struct {
 	proxies []*ProxyConfig
-	index   int
+	index   atomic.Int64
 }
 
 // NewProxyPool creates a proxy pool from a list of proxy URLs.
@@ -122,13 +124,14 @@ func NewProxyPool(urls []string) *ProxyPool {
 }
 
 // Get returns the next proxy in round-robin order.
+// The round-robin counter is atomically incremented so concurrent callers
+// (e.g. parallel health checks) never race on the index.
 func (p *ProxyPool) Get() *ProxyConfig {
 	if len(p.proxies) == 0 {
 		return nil
 	}
-	proxy := p.proxies[p.index%len(p.proxies)]
-	p.index++
-	return proxy
+	i := p.index.Add(1) - 1
+	return p.proxies[i%int64(len(p.proxies))]
 }
 
 // Size returns the number of proxies in the pool.

@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os/exec"
 	"strings"
 	"time"
@@ -279,143 +277,64 @@ func (c *CurlCffiClient) CheckAvailable() bool {
 
 // --- Unified client ---
 
-// TLSClient is a unified TLS-fingerprinting HTTP client.
-// Priority: utls (pure Go, most accurate) → curl-impersonate → curl_cffi → standard Go HTTP.
-// QUIC (HTTP/3) is available as an optional transport via the quic field;
-// when EnableQUIC is called, https requests try H3 first and fall back to
-// the utls HTTP/2 path on failure.
+// TLSClient is the single TLS-fingerprinting HTTP client used in live mode.
+//
+// Only the utls backend is selected: utls is a pure-Go reimplementation of
+// Chrome's ClientHello that is always available (no subprocess, no shared lib)
+// and produces Chrome-accurate JA3/JA4 fingerprints. The former
+// curl-impersonate → curl_cffi → standard-HTTP fallback chain was removed —
+// those branches were unreachable dead code because utls always reports
+// available, so the fallbacks could never be selected.
+//
+// QUIC (HTTP/3) is a separately-gated optional transport: when EnableQUIC is
+// called, https requests try it first only if QUIC actually reports available.
 type TLSClient struct {
 	utls        *UTLSClient
-	impersonate *CurlImpersonate
-	cffi        *CurlCffiClient
-	fallback    *http.Client
 	quic        *QUICClient
 	quicEnabled bool
 	target      string
 }
 
 // EnableQUIC turns on HTTP/3 (QUIC) as a preferred transport for https URLs.
-// Non-https and fallback paths are unaffected.
 func (tc *TLSClient) EnableQUIC() {
 	tc.quic = NewQUICClient(tc.target)
 	tc.quicEnabled = true
 }
 
-// NewTLSClient creates a unified TLS client with the given target.
+// NewTLSClient creates the unified TLS client. utls is always set up because
+// it is embedded and always available.
 func NewTLSClient(target string) *TLSClient {
-	tc := &TLSClient{target: target}
-
-	// Try utls first — pure Go, most accurate TLS fingerprint, no subprocess
-	tc.utls = NewUTLSClient(target)
-	if tc.utls.CheckAvailable() {
-		return tc
+	if target == "" {
+		target = "chrome150"
 	}
-
-	// Try curl-impersonate
-	tc.impersonate = NewCurlImpersonate("", target)
-	if tc.impersonate.CheckAvailable() {
-		return tc
+	return &TLSClient{
+		utls:   NewUTLSClient(target),
+		target: target,
 	}
-
-	// Try curl_cffi
-	tc.cffi = NewCurlCffi("", target)
-	if tc.cffi.CheckAvailable() {
-		return tc
-	}
-
-	// Fallback to standard Go HTTP (no TLS fingerprinting)
-	tc.fallback = &http.Client{
-		Timeout: 30 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	return tc
 }
 
 // Request sends an HTTP request using the best available TLS client.
 func (tc *TLSClient) Request(method, url string, headers map[string]string, body []byte) (*Response, error) {
-	// Try QUIC (HTTP/3) first for https URLs when enabled. On failure, fall
-	// through to the TLS-fingerprinted HTTP/2 path.
-	if tc.quicEnabled && tc.quic != nil && strings.HasPrefix(url, "https://") {
+	// QUIC (HTTP/3) is only tried for https when enabled AND actually available;
+	// otherwise it falls through to the TLS-fingerprinted utls HTTP/2 path.
+	if tc.quicEnabled && tc.quic != nil && tc.quic.CheckAvailable() && strings.HasPrefix(url, "https://") {
 		if resp, err := tc.quic.Request(method, url, headers, body); err == nil {
 			return resp, nil
 		}
 		// QUIC failed — fall through to utls/H2
 	}
-	if tc.utls != nil && tc.utls.CheckAvailable() {
+	if tc.utls != nil {
 		return tc.utls.Request(method, url, headers, body)
 	}
-	if tc.impersonate != nil && tc.impersonate.CheckAvailable() {
-		return tc.impersonate.Request(method, url, headers, body)
-	}
-	if tc.cffi != nil && tc.cffi.CheckAvailable() {
-		return tc.cffi.Request(method, url, headers, body)
-	}
-	// Fallback: standard Go HTTP
-	return tc.fallbackRequest(method, url, headers, body)
+	return nil, fmt.Errorf("no TLS client available")
 }
 
-func (tc *TLSClient) fallbackRequest(method, url string, headers map[string]string, body []byte) (*Response, error) {
-	var bodyReader io.Reader
-	if len(body) > 0 {
-		bodyReader = strings.NewReader(string(body))
-	}
-	req, err := http.NewRequest(method, url, bodyReader)
-	if err != nil {
-		return nil, err
-	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := tc.fallback.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-
-	respHeaders := make(map[string]string)
-	cookies := make(map[string]string)
-	var setCookies []string
-	for k, v := range resp.Header {
-		if len(v) > 0 {
-			respHeaders[k] = v[0]
-		}
-	}
-	for _, sc := range resp.Header["Set-Cookie"] {
-		setCookies = append(setCookies, sc)
-		nv := parseSetCookieNameValue(sc)
-		if nv[1] != "" || nv[0] != "" {
-			cookies[nv[0]] = nv[1]
-		}
-	}
-	return &Response{Status: resp.StatusCode, Headers: respHeaders, Body: string(respBody), BodyB64: b64Encode(respBody), Cookies: cookies, SetCookies: setCookies}, nil
-}
-
-// SetProxy configures proxy on all backends.
+// SetProxy configures a proxy on the utls backend.
 func (tc *TLSClient) SetProxy(proxyURL string) {
 	if tc.utls != nil {
 		tc.utls.SetProxy(proxyURL)
 	}
-	if tc.impersonate != nil {
-		tc.impersonate.SetProxy(proxyURL)
-	}
-	if tc.cffi != nil {
-		tc.cffi.SetProxy(proxyURL)
-	}
 }
 
 // Backend returns which TLS backend is in use.
-func (tc *TLSClient) Backend() string {
-	if tc.utls != nil && tc.utls.CheckAvailable() {
-		return "utls"
-	}
-	if tc.impersonate != nil && tc.impersonate.CheckAvailable() {
-		return "curl-impersonate"
-	}
-	if tc.cffi != nil && tc.cffi.CheckAvailable() {
-		return "curl_cffi"
-	}
-	return "standard-http"
-}
+func (tc *TLSClient) Backend() string { return "utls" }
