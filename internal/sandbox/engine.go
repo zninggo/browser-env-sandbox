@@ -232,7 +232,7 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 					if pending.String() != "0" {
 						// Bug 13 fix: check deadline before continuing
 						if time.Now().After(deadline) {
-							return "", fmt.Errorf("promise fulfilled but %d XHR still pending past %v timeout", pending.String(), timeout)
+							return "", fmt.Errorf("promise fulfilled but %s XHR still pending past %v timeout", pending.String(), timeout)
 						}
 						continue
 					}
