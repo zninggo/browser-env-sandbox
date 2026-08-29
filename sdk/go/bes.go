@@ -74,8 +74,8 @@ func (s *Sandbox) LoadScript(name, content string) error {
 // Call calls a global function by name.
 func (s *Sandbox) Call(functionName string, args ...string) (string, error) {
 	resp, err := s.post(fmt.Sprintf("/api/session/%s/call", s.sessionID), map[string]interface{}{
-		"function_name": functionName,
-		"args":          args,
+		"function": functionName,
+		"args":      args,
 	})
 	if err != nil {
 		return "", err

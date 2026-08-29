@@ -146,7 +146,7 @@ class Sandbox:
         if not self.session_id:
             raise BESError("Session not created")
         resp = self._post(f"/api/session/{self.session_id}/call", {
-            "function_name": function_name, "args": list(args),
+            "function": function_name, "args": list(args),
         })
         if "error" in resp and resp["error"]:
             raise BESError(resp["error"])
