@@ -58,11 +58,13 @@ func (e *Engine) SetConsoleSinkFactory(f ConsoleSinkFactory) {
 // NetHandlerFactory creates a NetHandler for a new session. When set, each
 // session's XHR/fetch make real HTTP requests through the handler. When nil
 // (default), XHR/fetch are stubs — suitable for pure JS execution / signing.
-type NetHandlerFactory func(opts api.SessionOptions, cookieStore *CookieStore) NetHandler
+// The fingerprint is passed so the network stack (TLS preset, UA) can be
+// aligned with the session's browser version.
+type NetHandlerFactory func(opts api.SessionOptions, fp *api.Fingerprint, cookieStore *CookieStore) NetHandler
 
 // SetNetHandlerFactory configures a factory that produces a NetHandler for
 // each new session. This wires the sandbox's XHR/fetch to a real network
-// stack (e.g. the netlayer package with curl_cffi TLS fingerprinting).
+// stack (e.g. the netlayer package with utls TLS fingerprinting).
 func (e *Engine) SetNetHandlerFactory(f NetHandlerFactory) {
 	e.netHandlerFactory = f
 }
@@ -74,6 +76,7 @@ type Session struct {
 	ctx         *v8go.Context
 	fp          *api.Fingerprint
 	location    string
+	proxyURL    string
 	cookieStore *CookieStore
 	timers      *TimerManager
 	netHandler  NetHandler
@@ -141,7 +144,7 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 	// session's XHR/fetch make real HTTP requests. nil = stubs (offline mode).
 	var netHandler NetHandler
 	if e.netHandlerFactory != nil {
-		netHandler = e.netHandlerFactory(opts, cookieStore)
+		netHandler = e.netHandlerFactory(opts, fp, cookieStore)
 	}
 
 	builder := &EnvBuilder{
@@ -179,8 +182,10 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 		ctx:         ctx,
 		fp:          fp,
 		location:    location,
+		proxyURL:    opts.Proxy,
 		cookieStore: cookieStore,
 		timers:      timerMgr,
+		netHandler:  netHandler,
 		consoleSink: consoleSink,
 		pool:        e.pool, // Bug 1 fix: return Isolate on Dispose
 	}
@@ -479,6 +484,24 @@ func (s *Session) SwapFingerprint(eng *Engine, opts api.SessionOptions) (*api.Fi
 // GetCookies returns the current cookie jar as a string.
 func (s *Session) GetCookies() string {
 	return s.cookieStore.String()
+}
+
+// Cookies returns the current cookie jar as a name→value map (for profile
+// snapshots).
+func (s *Session) Cookies() map[string]string {
+	return s.cookieStore.GetAll()
+}
+
+// Location returns the session's document URL.
+func (s *Session) Location() string {
+	return s.location
+}
+
+// ProxyURL returns the session's proxy URL (empty when direct).
+// The proxy is carried on the net handler options; it is stored here only for
+// observability and profile snapshots.
+func (s *Session) ProxyURL() string {
+	return s.proxyURL
 }
 
 // SetCookie sets a cookie in the sandbox.

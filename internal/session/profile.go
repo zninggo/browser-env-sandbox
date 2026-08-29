@@ -1,3 +1,11 @@
+// Package session persists browser profiles — the (fingerprint, cookies,
+// proxy, location) tuple needed to resume a session with the same identity
+// across sessions or machines.
+//
+// Profiles are plain JSON files under a base directory (default
+// data/profiles), keyed by profile ID. The bridge Service wires the store to
+// live sandbox sessions: SaveProfile snapshots a session, ResumeProfile
+// creates a new session from a stored snapshot.
 package session
 
 import (
@@ -95,17 +103,22 @@ func (ps *ProfileStore) List() ([]Profile, error) {
 	return profiles, nil
 }
 
-// CreateFromSession creates a Profile from an active session.
-func (ps *ProfileStore) CreateFromSession(ms *ManagedSession, name string) *Profile {
+// NewFromFingerprint snapshots an identity: fingerprint + cookies + proxy +
+// location, ready to be saved and later resumed via SessionOptions.
+func NewFromFingerprint(fp *api.Fingerprint, cookies map[string]string, proxy, location, name string) *Profile {
+	if location == "" {
+		location = "https://example.com/"
+	}
+	now := time.Now()
 	return &Profile{
-		ID:          ms.ID,
+		ID:          fmt.Sprintf("profile-%d", now.UnixNano()),
 		Name:        name,
-		Fingerprint: ms.Fingerprint,
-		Cookies:     ms.Cookies.GetAll(),
-		Proxy:       "",
-		Location:    "https://example.com/",
-		CreatedAt:   ms.CreatedAt,
-		UpdatedAt:   time.Now(),
+		Fingerprint: fp,
+		Cookies:     cookies,
+		Proxy:       proxy,
+		Location:    location,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 }
 
@@ -114,7 +127,7 @@ func (p *Profile) ExportJSON() ([]byte, error) {
 	return json.MarshalIndent(p, "", "  ")
 }
 
-// ImportJSON imports a profile from JSON bytes.
+// ImportProfileJSON imports a profile from JSON bytes.
 func ImportProfileJSON(data []byte) (*Profile, error) {
 	var p Profile
 	if err := json.Unmarshal(data, &p); err != nil {
@@ -129,13 +142,5 @@ func GenerateNewProfile(fpEng *fpengine.Engine, name, browser, os string) (*Prof
 	if err != nil {
 		return nil, err
 	}
-	return &Profile{
-		ID:          fmt.Sprintf("profile-%d", time.Now().UnixNano()),
-		Name:        name,
-		Fingerprint: fp,
-		Cookies:     make(map[string]string),
-		Location:    "https://example.com/",
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}, nil
+	return NewFromFingerprint(fp, make(map[string]string), "", "https://example.com/", name), nil
 }

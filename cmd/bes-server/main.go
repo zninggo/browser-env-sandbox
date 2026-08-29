@@ -43,15 +43,20 @@ func main() {
 	engine := sandbox.New(fpEng, *poolSize)
 
 	// Wire the network layer: each session gets a netlayer.Handler that makes
-	// real HTTP requests with TLS fingerprint matching (curl_cffi). When
+	// real HTTP requests with TLS fingerprint matching (utls). When
 	// NetMode is "live" (default), XHR/fetch in the sandbox hit the real
 	// internet. When "replay", they return pre-recorded responses.
-	engine.SetNetHandlerFactory(func(opts api.SessionOptions, cookieStore *sandbox.CookieStore) sandbox.NetHandler {
+	engine.SetNetHandlerFactory(func(opts api.SessionOptions, fp *api.Fingerprint, cookieStore *sandbox.CookieStore) sandbox.NetHandler {
 		netMode := opts.NetMode
 		if netMode == "" {
 			netMode = "live"
 		}
+		// Align the TLS/HTTP2 fingerprint with this session's UA version so
+		// ClientHello, H2 frames, and User-Agent tell the same story.
 		tlsTarget := "chrome" + defaultChromeVersion
+		if fp != nil && fp.Browser.Version != "" {
+			tlsTarget = "chrome" + fp.Browser.Version
+		}
 		handler, err := netlayer.New(netlayer.Mode(netMode), opts.Recording, opts.Proxy, tlsTarget)
 		if err != nil {
 			log.Printf("[bes-server] net handler init failed (falling back to stubs): %v", err)
@@ -62,7 +67,7 @@ func main() {
 		return &netHandlerAdapter{handler: handler, cookieStore: cookieStore}
 	})
 
-	svc := bridge.NewService(engine)
+	svc := bridge.NewService(engine, os.Getenv("BES_PROFILES_DIR"))
 
 	// CDP debug server: exposes /json/list + WebSocket so Chrome DevTools can
 	// connect to sandbox sessions. Off by default; enable with --cdp-port.
@@ -116,8 +121,9 @@ func main() {
 	log.Println("[bes-server] stopped")
 }
 
-// defaultChromeVersion is the Chrome version used for TLS fingerprint target.
-// Should match the fingerprint engine's default browser version.
+// defaultChromeVersion is the Chrome version used for the TLS fingerprint
+// target when a session has no fingerprint version (fallback only). Sessions
+// now pass their fingerprint's browser version through to the net layer.
 const defaultChromeVersion = "150"
 
 // startFpAutoUpdate runs a background loop that checks the npm registry

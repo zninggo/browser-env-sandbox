@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/zninggo/bes/internal/sandbox"
+	"github.com/zninggo/bes/internal/session"
 	"github.com/zninggo/bes/pkg/api"
 )
 
@@ -135,30 +136,65 @@ type SessionSummary struct {
 }
 
 type sessionEntry struct {
-	sess    *sandbox.Session
-	console *consoleBroadcaster
-	network *networkBroadcaster
+	sess       *sandbox.Session
+	console    *consoleBroadcaster
+	network    *networkBroadcaster
+	lastActive time.Time
 }
 
 // Service is the business-logic layer over sandbox.Engine. It owns the session
-// registry and the per-session event broadcasters. The HTTP handlers in
-// server.go are thin wrappers around these methods.
+// registry, the per-session event broadcasters, the profile store, and idle
+// session cleanup. The HTTP handlers in server.go are thin wrappers around
+// these methods.
 type Service struct {
 	engine   *sandbox.Engine
 	mu       sync.RWMutex
 	sessions map[string]*sessionEntry
+	profiles *session.ProfileStore
+
+	idleTimeout time.Duration
+	done        chan struct{}
 }
 
 // NewService wires a console-sink factory into the engine so every session
 // routes its console.* output to an independent broadcaster, then returns a
-// Service ready to serve.
-func NewService(engine *sandbox.Engine) *Service {
+// Service ready to serve. profileDir roots the profile store (empty =
+// data/profiles).
+func NewService(engine *sandbox.Engine, profileDir string) *Service {
 	engine.SetConsoleSinkFactory(func() sandbox.ConsoleSink {
 		return newConsoleBroadcaster()
 	})
-	return &Service{
-		engine:   engine,
-		sessions: make(map[string]*sessionEntry),
+	s := &Service{
+		engine:      engine,
+		sessions:    make(map[string]*sessionEntry),
+		profiles:    session.NewProfileStore(profileDir),
+		idleTimeout: 30 * time.Minute,
+		done:        make(chan struct{}),
+	}
+	go s.cleanupIdle()
+	return s
+}
+
+// cleanupIdle periodically removes sessions idle beyond the timeout, so
+// long-running servers don't leak isolates on abandoned sessions.
+func (s *Service) cleanupIdle() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			now := time.Now()
+			for id, e := range s.sessions {
+				if now.Sub(e.lastActive) > s.idleTimeout {
+					e.sess.Dispose()
+					delete(s.sessions, id)
+				}
+			}
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -179,9 +215,18 @@ func (s *Service) CreateSession(opts api.SessionOptions) (string, *api.Fingerpri
 	nb := newNetworkBroadcaster()
 
 	s.mu.Lock()
-	s.sessions[sess.ID] = &sessionEntry{sess: sess, console: cb, network: nb}
+	s.sessions[sess.ID] = &sessionEntry{sess: sess, console: cb, network: nb, lastActive: time.Now()}
 	s.mu.Unlock()
 	return sess.ID, sess.GetFingerprint(), nil
+}
+
+// touch updates a session's last-active timestamp (called on every op).
+func (s *Service) touch(id string) {
+	s.mu.Lock()
+	if e, ok := s.sessions[id]; ok {
+		e.lastActive = time.Now()
+	}
+	s.mu.Unlock()
 }
 
 func (s *Service) getEntry(id string) (*sessionEntry, bool) {
@@ -211,6 +256,7 @@ func (s *Service) ListSessions() []SessionSummary {
 // Eval executes JavaScript in a session and returns the stringified result.
 // Promise results are awaited (timers + microtasks drained) before returning.
 func (s *Service) Eval(id, code string) (string, error) {
+	s.touch(id)
 	e, ok := s.getEntry(id)
 	if !ok {
 		return "", fmt.Errorf("session not found: %s", id)
@@ -220,6 +266,7 @@ func (s *Service) Eval(id, code string) (string, error) {
 
 // LoadScript loads and executes a named script in a session.
 func (s *Service) LoadScript(id, name, content string) error {
+	s.touch(id)
 	e, ok := s.getEntry(id)
 	if !ok {
 		return fmt.Errorf("session not found: %s", id)
@@ -229,6 +276,7 @@ func (s *Service) LoadScript(id, name, content string) error {
 
 // CallFunction calls a global function by name with string arguments.
 func (s *Service) CallFunction(id, fn string, args []string) (string, error) {
+	s.touch(id)
 	e, ok := s.getEntry(id)
 	if !ok {
 		return "", fmt.Errorf("session not found: %s", id)
@@ -238,6 +286,7 @@ func (s *Service) CallFunction(id, fn string, args []string) (string, error) {
 
 // GetFingerprint returns a session's full fingerprint.
 func (s *Service) GetFingerprint(id string) (*api.Fingerprint, error) {
+	s.touch(id)
 	e, ok := s.getEntry(id)
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", id)
@@ -324,9 +373,69 @@ func (s *Service) PublishNetworkEvent(id string, evt NetworkEvent) {
 	e.network.emit(evt)
 }
 
+// ---------- Profile persistence ----------
+
+// SaveProfile snapshots a live session's identity (fingerprint + cookies +
+// proxy + location) into the profile store. name overrides the profile name;
+// empty defaults to the session ID.
+func (s *Service) SaveProfile(id, name string) (*session.Profile, error) {
+	e, ok := s.getEntry(id)
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", id)
+	}
+	if name == "" {
+		name = id
+	}
+	proxy := e.sess.ProxyURL()
+	fp := e.sess.GetFingerprint()
+	p := session.NewFromFingerprint(fp, e.sess.Cookies(), proxy, e.sess.Location(), name)
+	p.ID = "profile-" + id // stable per-session snapshot ID (overwrite on re-save)
+	if err := s.profiles.Save(p); err != nil {
+		return nil, fmt.Errorf("save profile failed: %w", err)
+	}
+	return p, nil
+}
+
+// ListProfiles returns all saved profiles.
+func (s *Service) ListProfiles() ([]session.Profile, error) {
+	return s.profiles.List()
+}
+
+// GetProfile reads one profile from the store.
+func (s *Service) GetProfile(id string) (*session.Profile, error) {
+	return s.profiles.Load(id)
+}
+
+// DeleteProfile removes a profile from the store.
+func (s *Service) DeleteProfile(id string) error {
+	return s.profiles.Delete(id)
+}
+
+// ResumeProfile creates a new session from a stored profile: the profile's
+// fingerprint (via its seed), cookies, proxy, and location are all restored.
+// Returns the new session ID.
+func (s *Service) ResumeProfile(profileID string) (string, *api.Fingerprint, error) {
+	p, err := s.profiles.Load(profileID)
+	if err != nil {
+		return "", nil, fmt.Errorf("load profile failed: %w", err)
+	}
+	opts := api.SessionOptions{
+		Seed:     p.Fingerprint.Seed,
+		Location: p.Location,
+		Cookies:  p.Cookies,
+		Proxy:    p.Proxy,
+	}
+	sessID, fp, err := s.CreateSession(opts)
+	if err != nil {
+		return "", nil, fmt.Errorf("resume session failed: %w", err)
+	}
+	return sessID, fp, nil
+}
+
 // Dispose closes all sessions and releases the engine's isolate pool. Intended
 // for graceful shutdown.
 func (s *Service) Dispose() {
+	close(s.done)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, e := range s.sessions {

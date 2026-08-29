@@ -342,7 +342,7 @@ func main() {
 	// what actually goes on the wire — JS-level checks cannot see this.
 	fmt.Println("\n── Network header consistency ──")
 	captured := make(chan map[string]string, 1)
-	eng.SetNetHandlerFactory(func(opts api.SessionOptions, cs *sandbox.CookieStore) sandbox.NetHandler {
+	eng.SetNetHandlerFactory(func(opts api.SessionOptions, fp *api.Fingerprint, cs *sandbox.CookieStore) sandbox.NetHandler {
 		return captureHandler{capture: captured}
 	})
 	netSess, err := eng.CreateSession(api.SessionOptions{
