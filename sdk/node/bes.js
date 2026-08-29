@@ -1,11 +1,31 @@
 // bes Node.js SDK — JSON-RPC over HTTP client
 // No gRPC dependency needed.
+//
+// 用法一（推荐）：静态工厂，返回已就绪实例
+//   const sandbox = await Sandbox.create({ serverAddr: 'localhost:19821' });
+//   await sandbox.eval('navigator.userAgent');
+//
+// 用法二：构造后 await ready
+//   const sandbox = new Sandbox();
+//   await sandbox.ready;
+//   await sandbox.eval('navigator.userAgent');
 
 class Sandbox {
+  // Async factory: resolves once the session is created and usable.
+  static async create(opts = {}) {
+    const { serverAddr = 'localhost:19821', ...rest } = opts;
+    const s = new Sandbox(serverAddr, rest);
+    await s._ready;
+    return s;
+  }
+
   constructor(serverAddr = 'localhost:19821', opts = {}) {
     this.baseURL = `http://${serverAddr}`;
     this.sessionId = null;
-    this._createSession(opts);
+    // D5 fix: the constructor fires session creation async; every API awaits
+    // this promise first so `new Sandbox(...).eval(...)` no longer races
+    // "Session not created".
+    this._ready = this._createSession(opts);
   }
 
   async _post(path, data) {
@@ -43,15 +63,20 @@ class Sandbox {
     return this;
   }
 
-  async eval(code) {
+  async _ensureSession() {
+    await this._ready;
     if (!this.sessionId) throw new Error('Session not created');
+  }
+
+  async eval(code) {
+    await this._ensureSession();
     const resp = await this._post(`/api/session/${this.sessionId}/eval`, { code });
     if (resp.error) throw new Error(resp.error);
     return resp.result || '';
   }
 
   async loadScript(name, content) {
-    if (!this.sessionId) throw new Error('Session not created');
+    await this._ensureSession();
     if (content === undefined) {
       const fs = require('fs');
       content = fs.readFileSync(name, 'utf-8');
@@ -61,7 +86,7 @@ class Sandbox {
   }
 
   async call(functionName, ...args) {
-    if (!this.sessionId) throw new Error('Session not created');
+    await this._ensureSession();
     const resp = await this._post(`/api/session/${this.sessionId}/call`, {
       function_name: functionName, args,
     });
@@ -70,22 +95,23 @@ class Sandbox {
   }
 
   async getFingerprint() {
-    if (!this.sessionId) throw new Error('Session not created');
+    await this._ensureSession();
     return this._get(`/api/session/${this.sessionId}/fingerprint`);
   }
 
   async getCookies() {
-    if (!this.sessionId) throw new Error('Session not created');
+    await this._ensureSession();
     const resp = await this._get(`/api/session/${this.sessionId}/cookies`);
     return resp.cookies || '';
   }
 
   async setCookie(name, value) {
-    if (!this.sessionId) throw new Error('Session not created');
+    await this._ensureSession();
     await this._post(`/api/session/${this.sessionId}/cookies`, { name, value });
   }
 
   async close() {
+    await this._ready.catch(() => {});
     if (this.sessionId) {
       try { await this._delete(`/api/session/${this.sessionId}`); } catch (e) {}
       this.sessionId = null;

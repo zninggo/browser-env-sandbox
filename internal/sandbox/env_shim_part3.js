@@ -442,17 +442,24 @@
     }
   });
 
-  // ── crypto.getRandomValues: 真正填充随机字节 ──
-  // Go 侧的 injectCrypto 原样返回输入（不填字节），SDK 生成 nonce/IV 时拿到全 0。
-  // 用 Math.random 填充——非密码学安全，但满足 SDK 格式需求且不崩。
+  // ── crypto.getRandomValues: 真正填充密码学随机字节 ──
+  // Bug 18 fix: Go 侧 injectCrypto 只占位（原样返回输入），这里改为调用
+  // __besRandomBytes（Go crypto/rand，base64 传输），v8go Value API 无法直接
+  // 写 TypedArray backing store，所以字节经 base64 过桥。可安全用于 nonce/IV。
   if (window.crypto && typeof crypto.getRandomValues === 'function') {
-    var _origGetRandomValues = crypto.getRandomValues.bind(crypto);
     crypto.getRandomValues = function(arr) {
       if (!arr || typeof arr.length !== 'number') {
         throw new TypeError('getRandomValues: argument is not a TypedArray');
       }
+      if (arr.length > 65536) {
+        throw new RangeError('getRandomValues: array length exceeds 65536');
+      }
+      var b64 = __besRandomBytes(arr.length);
+      // part3 runs before the fetch shim defines __besB64ToUint8Array —
+      // inline the std-alphabet base64 decode instead of depending on it.
+      var bin = atob(b64);
       for (var i = 0; i < arr.length; i++) {
-        arr[i] = Math.floor(Math.random() * 256);
+        arr[i] = bin.charCodeAt(i);
       }
       return arr;
     };
@@ -479,16 +486,23 @@
   // ── iframe.contentWindow / contentDocument ──
   // challenge-template.js 的环境采集器在 iframe.contentWindow 里跑（拿"干净"环境），
   // createElement('iframe') 返回的 stub 无 contentWindow → 直接崩。
-  // contentWindow 指回 window（globalThis），contentDocument 指回 document。
+  // Bug 32 fix: contentWindow 不能 === window（指纹检测点），用 Object.create
+  // 做一层隔离：原型链仍可达 window 的全局（拿"干净环境"的采集器能工作），
+  // 但 iframe.contentWindow !== window 成立。contentDocument 同理挂独立 body。
   var _origCE_forIframe = document.createElement;
   document.createElement = function(tagName) {
     var el = _origCE_forIframe.call(document, tagName);
     if (!el) return el;
     tagName = String(tagName).toLowerCase();
     if (tagName === 'iframe') {
-      Object.defineProperty(el, 'contentWindow', { value: window, configurable: true });
-      Object.defineProperty(el, 'contentDocument', { value: document, configurable: true });
-      try { nativeFns.add; } catch(e) {}
+      var contentWin = Object.create(window);
+      try { Object.defineProperty(contentWin, Symbol.toStringTag, { value: 'Window', configurable: true }); } catch(e) {}
+      Object.defineProperty(el, 'contentWindow', { value: contentWin, configurable: true });
+      var contentDoc = Object.create(document);
+      try { Object.defineProperty(contentDoc, Symbol.toStringTag, { value: 'HTMLDocument', configurable: true }); } catch(e) {}
+      Object.defineProperty(contentDoc, 'body', { value: document.createElement('body'), configurable: true });
+      Object.defineProperty(contentDoc, 'head', { value: document.createElement('head'), configurable: true });
+      Object.defineProperty(el, 'contentDocument', { value: contentDoc, configurable: true });
     }
     return el;
   };
@@ -570,6 +584,18 @@
                 height: h,
               };
             };
+            // Bug 7 residual fix: the Go measureText callback returns a JSON
+            // STRING (v8go can't create objects), but callers expect a real
+            // TextMetrics object (.width). Parse it once here.
+            var _besRawMeasureText = ctx.measureText;
+            ctx.measureText = function(text) {
+              var m = _besRawMeasureText.call(this, text);
+              if (typeof m === 'string') {
+                try { m = JSON.parse(m); } catch(e) { m = { width: 0 }; }
+              }
+              return m;
+            };
+            try { nativeFns.add(ctx.measureText); } catch(e) {}
           }
           return ctx;
         };

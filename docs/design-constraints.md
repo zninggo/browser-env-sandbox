@@ -5,6 +5,8 @@
 >
 > **架构备注：** 基于 Go + v8go 的纯 V8 Isolate 天然满足部分约束（标注 ⚡），
 > 其余约束在 Go 侧实现时仍然适用。
+>
+> **更新：** 2026-08-29 第二轮修复后新增第 11-14 条（V8 线程安全 / TypedArray 字节 / 原型链 / 回调返回值）。
 
 ## 1. navigator 属性必须与 UA 版本一致
 
@@ -101,3 +103,41 @@
 - `window.chrome` 从环境数据读取
 - 至少包含：`{ runtime: {}, loadTimes: function(){...}, csi: function(){...} }`
 - `window.chrome.runtime` 的 `onConnect`, `onMessage` 等为空对象
+
+## 11. V8 调用必须留在 Isolate 线程
+
+**常见问题：** v8go 的所有 Value/Object/Function API（`AsFunction()`、`Global()`、`Call()` 等）都不是线程安全的。在 Go goroutine 里直接调它们，与主线程 Eval 并发时可能随机崩溃（非确定性，压测才暴露）。
+
+**正确做法：**
+- 回调同步入口（V8 线程内）先把 `*v8go.Value` 转成具体类型（如 `AsFunction`）、保存 `ctx.Global()`，作为普通 Go 值传给 goroutine
+- goroutine 内只做纯 Go 工作（网络、解析），绝不碰 v8go API
+- 结果回传用 `scheduleTimer(0, ...)` 排回 Isolate 线程，在 timer 回调里执行 `cb.Call`
+- 验证方式：并发 50+ 次 eval + async fetch 压测无崩溃
+
+## 12. v8go 无法直接读写 TypedArray 字节
+
+**常见问题：** `crypto.getRandomValues`、XHR arrayBuffer 等需要填充 TypedArray 的场景，v8go Value API 没有 `Bytes()`/`SetBytes()` 接口（只有 SharedArrayBuffer 有 backing store 访问）。
+
+**正确做法：**
+- Go 侧生成/处理字节后以 base64 字符串跨边界传输（`__besRandomBytes` 模式）
+- JS 侧用 std-alphabet atob 解码填充（注意 shim part 加载顺序，part3 早于 fetch shim，需内联 atob 而不能引用 `__besB64ToUint8Array`）
+- 规格：`getRandomValues` 上限 65536 字节，超出抛 `RangeError`
+
+## 13. 模板实例不继承 JS 原型链
+
+**常见问题：** Go 侧 ObjectTemplate/FunctionTemplate 创建的实例（`new Event()`），其 `[[Prototype]]` 是 `Object.prototype`，不是 `window.Event.prototype`——在 JS 侧往 `Event.prototype` 挂方法对模板实例无效。
+
+**正确做法：**
+- 方案 A（推荐）：JS 侧用包装函数替换全局构造器——调 Go 构造器造实例，`delete` 实例上的自有 noop 方法（避免遮蔽），再 `Object.setPrototypeOf(inst, Wrapper.prototype)` 挂上带状态的 JS 方法
+- 方案 B：模板阶段直接在实例模板上挂方法（适合无状态 noop，无法维护 `defaultPrevented` 这类实例状态）
+- 子类构造器给实例赋 `this[Symbol.toStringTag]` 时，父原型上的 tag 必须 `writable: true`，否则沿原型链赋值抛 TypeError
+- 包装后实例 `Object.prototype.toString.call(new Event('x'))` 仍应为 `[object Event]`
+
+## 14. v8go 回调返回值只能是基本类型
+
+**常见问题：** Go FunctionCallback 里 `v8go.NewValue(iso, jsonString)` 返回的是 **JS 字符串**，不是解析后的对象。调用方期望 `measureText(...).width` 这类对象访问时会拿到 undefined。
+
+**正确做法：**
+- 需要返回真 JS 对象时，在 JS 侧包一层解析（如 part3 的 `ctx.measureText` 包装：`typeof m === 'string'` 时 `JSON.parse`）
+- 或参考 `getSupportedExtensions` 用 `info.Context().RunScript("[...]")` 直接构造数组
+- 对外契约（TextMetrics、getBoundingClientRect 等）必须在 JS 侧保证返回对象

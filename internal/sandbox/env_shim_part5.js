@@ -228,6 +228,52 @@
     window.DOMMatrix = function() { this[Symbol.toStringTag]='DOMMatrix'; };
   }
 
+  // ── Event.prototype methods (Bug 43 residual fix) ──
+  // Go 侧模板构造的 new Event() 实例不继承 window.Event.prototype（v8go 模板
+  // 实例的 [[Prototype]] 是 Object.prototype），原型方法对它们无效。所以：
+  // 1) 用 Go 构造器造实例 → setPrototypeOf 挂上 JS Event.prototype（带活方法）
+  // 2) 用这个包装替换 window.Event，后续 new Event() 全部走 JS 路径
+  // 3) CustomEvent/MessageEvent 等继承 Event.prototype，方法一并生效
+  if (typeof Event !== 'undefined' && window.Event && typeof window.Event === 'function') {
+    var _besGoEvent = window.Event;
+    var _evtMethods = {
+      preventDefault: function() { if (this.cancelable) this.defaultPrevented = true; },
+      stopPropagation: function() { this.cancelBubble = true; },
+      stopImmediatePropagation: function() { this.cancelBubble = true; this._besStoppedImmediate = true; },
+      initEvent: function(type, bubbles, cancelable) {
+        this.type = type;
+        this.bubbles = !!bubbles;
+        this.cancelable = !!cancelable;
+      },
+    };
+    function BesEvent(type, init) {
+      var inst = _besGoEvent(type);
+      init = init || {};
+      if (typeof inst.bubbles !== 'undefined') inst.bubbles = !!init.bubbles;
+      if (typeof inst.cancelable !== 'undefined') inst.cancelable = !!init.cancelable;
+      if (init.composed !== undefined && typeof inst.composed !== 'undefined') inst.composed = !!init.composed;
+      // Go 模板在实例上挂的 noop 方法会遮蔽原型上的活方法（实例自有属性优先），
+      // 删掉它们，让 BesEvent.prototype 的带状态实现生效。
+      delete inst.preventDefault;
+      delete inst.stopPropagation;
+      delete inst.stopImmediatePropagation;
+      delete inst.initEvent;
+      Object.setPrototypeOf(inst, BesEvent.prototype);
+      return inst;
+    }
+    BesEvent.prototype = Object.create(Object.prototype);
+    for (var m in _evtMethods) {
+      Object.defineProperty(BesEvent.prototype, m, { value: _evtMethods[m], writable: true, configurable: true });
+    }
+    Object.defineProperty(BesEvent.prototype, 'constructor', { value: BesEvent, writable: true, configurable: true });
+    // writable:true — 子类构造器（CustomEvent 等）会给实例赋 this[Symbol.toStringTag]，
+    // 若原型 tag 不可写，赋值会沿原型链失败抛 TypeError。
+    try { Object.defineProperty(BesEvent.prototype, Symbol.toStringTag, { value: 'Event', writable: true, configurable: true }); } catch(e) {}
+    Object.setPrototypeOf(BesEvent, _besGoEvent); // static props (Event.CAPTURING_PHASE 等) 透传
+    window.Event = BesEvent;
+    try { nativeFns.add(window.Event); } catch(e) {}
+  }
+
   // --- CustomEvent ---
   if (typeof CustomEvent === 'undefined') {
     window.CustomEvent = function(type, opts) { this.type = type; this.detail = opts && opts.detail || null; this[Symbol.toStringTag] = 'CustomEvent'; };
