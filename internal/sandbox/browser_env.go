@@ -43,7 +43,6 @@ func (b *EnvBuilder) Build() {
 	b.injectPerformance()
 	b.injectCrypto()
 	b.injectTimers()
-	b.injectConsole()
 	b.injectEventClasses()
 	b.injectMutationObserver()
 }
@@ -268,31 +267,12 @@ func (b *EnvBuilder) injectTimers() {
 	}))
 }
 
-func (b *EnvBuilder) injectConsole() {
-	console := v8go.NewObjectTemplate(b.iso)
-	for _, method := range []string{"log", "debug", "info", "warn", "error"} {
-		m := method // capture
-		console.Set(m, v8go.NewFunctionTemplate(b.iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
-			args := info.Args()
-			parts := make([]string, len(args))
-			for i, a := range args {
-				parts[i] = a.String()
-			}
-			msg := strings.Join(parts, " ")
-			if b.consoleSink != nil {
-				b.consoleSink.Write(m, msg)
-			} else {
-				fmt.Printf("[console.%s] %s\n", m, msg)
-			}
-			return nil
-		}))
-	}
-	console.Set("dir", v8go.NewFunctionTemplate(b.iso, noopCallback))
-	console.Set("trace", v8go.NewFunctionTemplate(b.iso, noopCallback))
-	console.Set("group", v8go.NewFunctionTemplate(b.iso, noopCallback))
-	console.Set("groupEnd", v8go.NewFunctionTemplate(b.iso, noopCallback))
-	b.global.Set("console", console)
-}
+	// NOTE: console is NOT injected here. v8go v0.34.0 has a bug where
+	// FunctionTemplates nested inside an ObjectTemplate (Set on the template)
+	// silently never fire their Go callbacks when the object is instantiated
+	// from the global template at context creation. Instead, console is
+	// injected in PostContextBuilder via GetFunction + global.Set, which works.
+	// See PostContextBuilder.injectConsole.
 
 func (b *EnvBuilder) injectEventClasses() {
 	// Event, CustomEvent, EventTarget
@@ -444,6 +424,7 @@ type PostContextBuilder struct {
 	cookieStore *CookieStore
 	timerMgr    *TimerManager
 	netHandler  NetHandler
+	consoleSink ConsoleSink
 	opts        api.SessionOptions
 }
 
@@ -492,6 +473,11 @@ func (p *PostContextBuilder) Build() {
 	p.injectComplexNavigator()
 	p.injectTimezone()
 
+	// Inject console (PostContext: ObjectTemplate-nested FunctionTemplates
+	// never fire their Go callbacks in v8go v0.34.0 — see note in
+	// EnvBuilder.Build).
+	p.injectConsole()
+
 	// Inject permissions API (navigator.permissions)
 	p.injectPermissions()
 
@@ -517,6 +503,58 @@ func (p *PostContextBuilder) Build() {
 }
 
 // --- helpers ---
+
+// injectConsole adds console.log/info/warn/error/debug/dir to the global.
+// Must run in PostContext: v8go v0.34.0 never fires Go callbacks for
+// FunctionTemplates nested inside an ObjectTemplate at context creation
+// (verified experimentally — typeof console.log === "function" but the
+// callback is silent). GetFunction + global.Set works.
+func (p *PostContextBuilder) injectConsole() {
+	iso, ctx := p.iso, p.ctx
+
+	logFn := func(level string) *v8go.Function {
+		lvl := level
+		cb := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+			args := info.Args()
+			parts := make([]string, len(args))
+			for i, a := range args {
+				parts[i] = a.String()
+			}
+			msg := strings.Join(parts, " ")
+			if p.consoleSink != nil {
+				p.consoleSink.Write(lvl, msg)
+			} else {
+				fmt.Printf("[console.%s] %s\n", lvl, msg)
+			}
+			return v8go.Undefined(iso)
+		}
+		return v8go.NewFunctionTemplate(iso, cb).GetFunction(ctx)
+	}
+
+	// Create an empty object via JS (v8go has no NewObject constructor).
+	consoleVal, err := ctx.RunScript("({})", "console-obj.js")
+	if err != nil {
+		fmt.Printf("[sandbox] console inject failed: %v\n", err)
+		return
+	}
+	consoleObj, err := consoleVal.AsObject()
+	if err != nil {
+		fmt.Printf("[sandbox] console inject failed: %v\n", err)
+		return
+	}
+
+	for _, m := range []string{"log", "debug", "info", "warn", "error"} {
+		if fn := logFn(m); fn != nil {
+			consoleObj.Set(m, fn)
+		}
+	}
+	consoleObj.Set("dir", v8go.NewFunctionTemplate(iso, noopCallback).GetFunction(ctx))
+	consoleObj.Set("trace", v8go.NewFunctionTemplate(iso, noopCallback).GetFunction(ctx))
+	consoleObj.Set("group", v8go.NewFunctionTemplate(iso, noopCallback).GetFunction(ctx))
+	consoleObj.Set("groupEnd", v8go.NewFunctionTemplate(iso, noopCallback).GetFunction(ctx))
+
+	p.global.Set("console", consoleObj)
+}
 
 func (b *EnvBuilder) setTemplateValue(tmpl *v8go.ObjectTemplate, key string, val interface{}) {
 	switch v := val.(type) {
