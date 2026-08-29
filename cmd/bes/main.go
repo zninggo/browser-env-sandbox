@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zninggo/bes/internal/fpengine"
+	"github.com/zninggo/bes/internal/fpupdate"
 	"github.com/zninggo/bes/internal/mcp"
 	"github.com/zninggo/bes/internal/sandbox"
 	"github.com/zninggo/bes/pkg/api"
@@ -30,6 +31,8 @@ func main() {
 		cmdSelftest(os.Args[2:])
 	case "mcp":
 		cmdMCP(os.Args[2:])
+	case "update-fp":
+		cmdUpdateFP(os.Args[2:])
 	case "version":
 		fmt.Println("bes v0.2.0 (V8 engine: v8go v0.9.0, V8 9.0)")
 	default:
@@ -47,8 +50,31 @@ Usage:
   bes export-fp --output <file> [--browser chrome] [--os windows] [--seed 0]
   bes selftest
   bes mcp                    # Start MCP server (stdio, for AI agents)
+  bes update-fp              # Download latest fingerprint data from npm
   bes version
 `)
+}
+
+func cmdUpdateFP(args []string) {
+	dataPath := "data/fp_real_data.json"
+	if p := os.Getenv("BES_FP_DATA"); p != "" {
+		dataPath = p
+	}
+	updated, version, err := fpupdate.CheckAndUpdate(dataPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+		os.Exit(1)
+	}
+	if updated {
+		fmt.Printf("\nFingerprint data updated to version %s\n", version)
+		fmt.Printf("Data file: %s\n", dataPath)
+		fpengine.ReloadFpRealData()
+		stats := fpengine.FpDataStats()
+		fmt.Printf("Loaded: %d GPUs, %d screens, %d hardwareConcurrency, %d deviceMemory\n",
+			stats["gpus"], stats["screens"], stats["hardware_concurrency"], stats["device_memory"])
+	} else {
+		fmt.Printf("Already up-to-date (version %s)\n", version)
+	}
 }
 
 func cmdExportFP(args []string) {
