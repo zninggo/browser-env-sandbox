@@ -89,24 +89,55 @@
   };
 
   // ── URL / URLSearchParams ──
+  // Bug 29 fix: full parse handling IPv6 ([::1]:8080 — split(':') breaks it),
+  // user:pass@ credentials, default-port omission, and WHATWG-normalized
+  // origin/protocol/host fields.
   window.URL = window.URL || function(url, base) {
-    var fullUrl = base ? base + url : url;
+    var fullUrl = (base && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(String(url))) ? String(base) + String(url) : String(url);
     var parser = { href: fullUrl };
-    // Simple URL parsing
-    var match = fullUrl.match(/^([^:]+):\/\/([^/]+)([^?]*)(\?[^#]*)?(#.*)?$/);
+    var match = fullUrl.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(?:([^@/]*)@)?([^/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$/);
     if (match) {
-      parser.protocol = match[1] + ':';
-      parser.host = match[2];
-      parser.hostname = match[2].split(':')[0];
-      parser.port = match[2].split(':')[1] || '';
-      parser.pathname = match[3] || '/';
-      parser.search = match[4] || '';
-      parser.hash = match[5] || '';
-      parser.origin = match[1] + '://' + match[2];
+      var scheme = match[1].toLowerCase();
+      var creds = match[2] || '';
+      var hostPart = match[3] || '';
+      var isIPv6 = hostPart.charAt(0) === '[';
+      var hostname = hostPart;
+      var port = '';
+      if (isIPv6) {
+        // [::1]:8080 → host inside brackets, port outside
+        var v6 = hostPart.match(/^\[([^\]]*)\](?::(\d+))?$/);
+        if (v6) {
+          hostname = '[' + v6[1] + ']';
+          port = v6[2] || '';
+        }
+      } else {
+        var hi = hostPart.lastIndexOf(':');
+        if (hi >= 0) {
+          hostname = hostPart.slice(0, hi);
+          port = hostPart.slice(hi + 1);
+        }
+      }
+      var pathname = match[4] || '/';
+      if (pathname === '') pathname = '/';
+      var defaultPorts = { http: '80', https: '443', ws: '80', wss: '443', ftp: '21' };
+      var isDefault = port !== '' && defaultPorts[scheme] === port;
+      parser.protocol = scheme + ':';
+      parser.username = creds.split(':')[0] || '';
+      parser.password = creds.indexOf(':') >= 0 ? creds.slice(creds.indexOf(':') + 1) : '';
+      parser.hostname = hostname;
+      parser.port = isDefault ? '' : port;
+      parser.host = port !== '' && !isDefault ? hostname + ':' + port : hostname;
+      parser.pathname = pathname;
+      parser.search = match[5] || '';
+      parser.hash = match[6] || '';
+      parser.origin = scheme + '://' + (isIPv6 ? hostname : parser.host);
     }
     parser.toString = function() { return this.href; };
+    parser.toJSON = function() { return this.href; };
     return parser;
   };
+  window.URL.createObjectURL = function(blob) { return 'blob:https://example.com/' + (++urlCounter); };
+  window.URL.revokeObjectURL = function(url) { delete urlStore[url]; };
   // Bug 30 fix: append preserves multiple values; set overwrites.
   // Internal storage: { name: [val1, val2] }
   window.URLSearchParams = function(init) {
@@ -237,8 +268,6 @@
   };
   var urlCounter = 0;
   var urlStore = {};
-  window.URL.createObjectURL = function(blob) { return 'blob:https://example.com/' + (++urlCounter); };
-  window.URL.revokeObjectURL = function(url) { delete urlStore[url]; };
 
   // ── FormData ──
   window.FormData = function() {

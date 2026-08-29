@@ -9,7 +9,8 @@
 export PATH=$PATH:/usr/local/go/bin
 cd browser-env-sandbox
 go build -o bes-server ./cmd/bes-server
-./bes-server --port 18900
+# 本地默认 8080；Docker/生产与 SDK 默认 19821（与 sdk/node、sdk/python 一致）
+./bes-server --port 19821
 # 默认无 auth，API 开放。生产环境加 --auth-token <token>
 ```
 
@@ -35,7 +36,7 @@ go build -o bes-server ./cmd/bes-server
 ### 1. 创建 session
 
 ```bash
-curl -X POST http://localhost:18900/api/session \
+curl -X POST http://localhost:19821/api/session \
   -H 'Content-Type: application/json' \
   -d '{"browser":"chrome","os":"windows"}'
 # → {"session_id":"sess-xxx","fingerprint":{...}}
@@ -57,7 +58,7 @@ curl -X POST http://localhost:18900/api/session \
 ### 2. 执行 JS
 
 ```bash
-curl -X POST http://localhost:18900/api/session/sess-xxx/eval \
+curl -X POST http://localhost:19821/api/session/sess-xxx/eval \
   -H 'Content-Type: application/json' \
   -d '{"code":"navigator.userAgent + \" / \" + navigator.platform"}'
 # → {"result":"Mozilla/5.0 ... Chrome/131 ... / Win32"}
@@ -68,7 +69,7 @@ curl -X POST http://localhost:18900/api/session/sess-xxx/eval \
 ### 3. 加载脚本
 
 ```bash
-curl -X POST http://localhost:18900/api/session/sess-xxx/script \
+curl -X POST http://localhost:19821/api/session/sess-xxx/script \
   -H 'Content-Type: application/json' \
   -d '{"name":"mylib","content":"function add(a,b){return a+b}"}'
 # → {}（成功无返回体）
@@ -79,7 +80,7 @@ curl -X POST http://localhost:18900/api/session/sess-xxx/script \
 ### 4. 调用函数
 
 ```bash
-curl -X POST http://localhost:18900/api/session/sess-xxx/call \
+curl -X POST http://localhost:19821/api/session/sess-xxx/call \
   -H 'Content-Type: application/json' \
   -d '{"function":"add","args":["1","2"]}'
 # → {"result":"3"}
@@ -89,10 +90,10 @@ curl -X POST http://localhost:18900/api/session/sess-xxx/call \
 
 ```bash
 # 读
-curl http://localhost:18900/api/session/sess-xxx/cookies
+curl http://localhost:19821/api/session/sess-xxx/cookies
 
 # 写
-curl -X POST http://localhost:18900/api/session/sess-xxx/cookies \
+curl -X POST http://localhost:19821/api/session/sess-xxx/cookies \
   -H 'Content-Type: application/json' \
   -d '{"name":"session_id","value":"abc123","domain":"example.com"}'
 ```
@@ -125,7 +126,7 @@ resp, err := client.Request("GET", "https://example.com/", headers, nil)
 ```python
 import json, urllib.request
 
-BES = "http://localhost:18900"
+BES = "http://localhost:19821"
 
 def bes_api(path, data=None):
     url = f"{BES}{path}"

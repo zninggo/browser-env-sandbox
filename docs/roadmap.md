@@ -1,6 +1,6 @@
 # 开发路线图
 
-> 最后核查: 2026-08-27 (按代码实际状态回填勾选)
+> 最后核查: 2026-08-29 (按代码实际状态回填勾选)
 
 ## Phase 0: 架构确立 ✅ (2026-08-27)
 - [x] 确定技术栈: Go + v8go
@@ -40,7 +40,7 @@
 - [x] 事件循环模拟 + flushTimers
 - [x] **验证：沙箱内执行基本浏览器检测 JS 无报错**
 
-里程碑 M2: 沙箱可用 — 基本浏览器环境检查通过 (133/133 ✅)
+里程碑 M2: 沙箱可用 — 基本浏览器环境检查通过 (210/210 ✅)
 
 ## Phase 3: 端到端验证场景
 - [ ] 获取典型页面 JS（含环境探测逻辑）
@@ -63,7 +63,7 @@
 - [x] **Cookie 自动同步 (Set-Cookie → CookieStore → document.cookie)** (2026-08-28)
 - [x] **验证：沙箱内 XHR → 真实 HTTP 请求 → 响应回传完整链路** (2026-08-28)
 - [x] 原生 Go TLS 指纹（不依赖 curl_cffi Python 子进程）
-- [x] 异步 XHR 模式（当前为同步，bdms/ttwid 场景够用）
+- [x] 同步 + 异步 XHR 双模式（`__besNetRequest` 同步阻塞 / `__besNetRequestAsync` + setTimeout 回 Isolate 线程；Bug 6 恢复同步 XHR，回调捕获已在 Isolate 线程完成）
 
 里程碑 M4: 网络层可用 — 沙箱 XHR/fetch 可发真实网络请求 ✅ (2026-08-28)
 
@@ -104,8 +104,8 @@
 ### P0 — 基础设施补全
 - [x] Dockerfile + docker-compose 部署
 - [x] MCP (Model Context Protocol) server 适配
-- [x] 原生 Go TLS 指纹（不依赖 curl_cffi Python 子进程，需 CGO + BoringSSL）
-- [x] HTTP/3 (QUIC) 支持
+- [x] 原生 Go TLS 指纹（utls `HelloChrome_133` + post-quantum signature schemes，不再依赖 curl_cffi/curl-impersonate）
+- [ ] HTTP/3 (QUIC) 支持（`quic.go` 仅为占位，`CheckAvailable()` 返回 false，未实现真实 QUIC 传输）
 - [x] Playwright/Puppeteer 兼容层
 
 ### P1 — 功能增强
@@ -128,10 +128,21 @@
 | 里程碑 | 内容 | 产出 |
 |-------|------|------|
 | M1 | 指纹引擎 | 自洽指纹通过检测 ✅ |
-| M2 | V8 沙箱 | 浏览器环境检查通过 (133/133 ✅) |
+| M2 | V8 沙箱 | 浏览器环境检查通过 (210/210 ✅) |
 | M3 | 端到端验证 | 典型页面 JS 行为一致 |
 | M4 | 网络层 | replay + 转发双模式 ✅ |
 | M5 | 调试层 | DevTools 可调试 ✅ |
 | M6 | 桥接层 | 多语言 SDK ✅ |
 | M7 | 通用化 | 多场景隔离 ✅ |
 | M8 | 功能补全 | Docker + MCP + Playwright 兼容 ✅ |
+
+## 第二轮残留 Bug 修复 (2026-08-29)
+
+- [x] Bug A: asyncCallback goroutine 内 `AsFunction()`/`Global()` 调用移回 Isolate 线程（并发 50 次 async fetch 压测无崩溃）
+- [x] Bug B: measureText 非线性宽度（per-character advance 表 + per-fingerprint 抖动，返回真实 TextMetrics 对象）
+- [x] Bug C: crypto.getRandomValues 改用 Go `crypto/rand`（`__besRandomBytes` base64 过桥，65536 上限符合规范）
+- [x] Bug D: URL 解析支持 IPv6 `[::1]:8080`、`user:pass@` 凭据、默认端口省略、WHATWG origin
+- [x] Bug E: `iframe.contentWindow !== window`（`Object.create(window)` 隔离，contentDocument 同理）
+- [x] Bug F: `new Event()` / `new CustomEvent()` 补 preventDefault/stopPropagation/stopImmediatePropagation/initEvent（JS BesEvent 包装 + Event.prototype 方法）
+- [x] Bug G: BES-USAGE.md 端口 18900 → 19821（与 SDK/Docker 默认一致）
+- [x] Bug H: roadmap.md 同步/异步 XHR 描述更新 + Node SDK 提供 `Sandbox.create()` 静态工厂与 `ready` promise

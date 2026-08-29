@@ -251,8 +251,9 @@ func main() {
 		{"localStorage.length", `(function(){localStorage.clear();localStorage.setItem('a','1');localStorage.setItem('b','2');return String(localStorage.length)})()`, "2"},
 		{"sessionStorage.getItem/setItem", `(function(){sessionStorage.setItem('t','v');return sessionStorage.getItem('t')})()`, "v"},
 		{"iframe.contentWindow exists", `typeof document.createElement('iframe').contentWindow`, "object"},
-		{"iframe.contentWindow === window", `String(document.createElement('iframe').contentWindow === window)`, "true"},
-		{"iframe.contentDocument === document", `String(document.createElement('iframe').contentDocument === document)`, "true"},
+		{"iframe.contentWindow !== window (Bug 32)", `String(document.createElement('iframe').contentWindow !== window)`, "true"},
+		{"iframe.contentDocument !== document (Bug 32)", `String(document.createElement('iframe').contentDocument !== document)`, "true"},
+		{"iframe.contentWindow sees globals via prototype", `String(document.createElement('iframe').contentWindow.navigator !== undefined)`, "true"},
 		{"performance.timeOrigin is number", `typeof performance.timeOrigin`, "number"},
 		{"performance.now() >= 0", `String(performance.now() >= 0)`, "true"},
 		{"performance.now() is monotonic", `(function(){var a=performance.now();var b=performance.now();return String(b>=a)})()`, "true"},
@@ -275,6 +276,21 @@ func main() {
 		{"URLSearchParams append preserves multiple", `(function(){var p=new URLSearchParams();p.append('a','1');p.append('a','2');return p.getAll('a').join(',')})()`, "1,2"},
 		{"FileReader exists with readAsText", `typeof FileReader.prototype.readAsText`, "function"},
 		{"plugins.namedItem finds by name", `String(navigator.plugins.namedItem('PDF Viewer') !== null)`, "true"},
+		// ── 第二轮修复验证（BUGS-ROUND2） ──
+		{"measureText non-linear (Bug 7 residual)", `(function(){var c=document.createElement('canvas').getContext('2d');var perI=c.measureText('iiiii').width/5;var perW=c.measureText('WWWWW').width/5;return String(perW>perI && perW!==perI)})()`, "true"},
+		{"measureText width varies per char (Bug 7 residual)", `(function(){var c=document.createElement('canvas').getContext('2d');var w1=c.measureText('iiiii').width;var w2=c.measureText('WWWWW').width;return String(w2 > w1)})()`, "true"},
+		{"measureText returns TextMetrics-like object", `(function(){var m=document.createElement('canvas').getContext('2d').measureText('hi');return String(typeof m.width === 'number' && typeof m.actualBoundingBoxAscent === 'number')})()`, "true"},
+		{"crypto.getRandomValues uses crypto/rand (Bug 18)", `(function(){var a=new Uint8Array(32),b=new Uint8Array(32);crypto.getRandomValues(a);crypto.getRandomValues(b);var same=true;for(var i=0;i<32;i++)if(a[i]!==b[i]){same=false;break}return String(!same)})()`, "true"},
+		{"crypto.getRandomValues large array throws (spec cap)", `(function(){try{crypto.getRandomValues(new Uint8Array(65537));return 'no-throw'}catch(e){return String(e instanceof RangeError)}})()`, "true"},
+		{"Event has preventDefault (Bug 43 residual)", `typeof new Event('x').preventDefault`, "function"},
+		{"Event has stopPropagation (Bug 43 residual)", `typeof new Event('x').stopPropagation`, "function"},
+		{"Event methods callable without error (Bug 43)", `(function(){var e=new Event('x',{cancelable:true});e.preventDefault();e.stopPropagation();e.stopImmediatePropagation();return String(e.defaultPrevented===true&&e.cancelBubble===true)})()`, "true"},
+		{"CustomEvent inherits Event methods (Bug 43)", `typeof new CustomEvent('x').preventDefault`, "function"},
+		{"URL IPv6 port parse (Bug 29)", `new URL('http://[::1]:8080/path').port`, "8080"},
+		{"URL IPv6 hostname kept (Bug 29)", `new URL('http://[::1]:8080/path').hostname`, "[::1]"},
+		{"URL credentials parse (Bug 29)", `(function(){var u=new URL('http://user:pass@example.com/');return u.username+':'+u.password})()`, "user:pass"},
+		{"URL default port omitted (Bug 29)", `new URL('http://example.com:80/').port`, ""},
+		{"URL origin normalized (Bug 29)", `new URL('https://example.com/path?q=1').origin`, "https://example.com"},
 	}
 
 	passed := 0

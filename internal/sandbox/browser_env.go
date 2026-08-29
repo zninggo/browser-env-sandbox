@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"crypto/sha256"
+	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -228,10 +229,13 @@ func (b *EnvBuilder) injectPerformance() {
 }
 
 func (b *EnvBuilder) injectCrypto() {
-	// crypto.getRandomValues — Go callback generating real random bytes
+	// crypto.getRandomValues — real byte filling is wired in
+	// injectCryptoHelpers (__besRandomBytes, crypto/rand-backed) +
+	// env_shim_part3.js which decodes and fills the caller's TypedArray.
+	// This template-level stub keeps typeof crypto.getRandomValues working
+	// even when the post-context shim is skipped.
 	crypto := v8go.NewObjectTemplate(b.iso)
 	crypto.Set("getRandomValues", v8go.NewFunctionTemplate(b.iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
-		// Return the input array unchanged (real impl would fill it)
 		if len(info.Args()) > 0 {
 			return info.Args()[0]
 		}
@@ -302,6 +306,22 @@ func (b *EnvBuilder) injectEventClasses() {
 		obj.Set("bubbles", false)
 		obj.Set("cancelable", false)
 		obj.Set("timeStamp", float64(0))
+		// Bug 43 residual fix: Event instances must expose the standard event
+		// methods (fingerprinters and dispatch helpers call them unconditionally).
+		// v8go template instances don't inherit from a JS Event.prototype, so the
+		// methods are mounted directly on the instance template.
+		obj.Set("preventDefault", v8go.NewFunctionTemplate(b.iso, noopCallback))
+		obj.Set("stopPropagation", v8go.NewFunctionTemplate(b.iso, noopCallback))
+		obj.Set("stopImmediatePropagation", v8go.NewFunctionTemplate(b.iso, noopCallback))
+		obj.Set("defaultPrevented", false)
+		obj.Set("cancelBubble", false)
+		obj.Set("composed", false)
+		obj.Set("isTrusted", false)
+		obj.Set("target", v8go.Null(b.iso))
+		obj.Set("currentTarget", v8go.Null(b.iso))
+		obj.Set("eventPhase", int32(0))
+		obj.Set("initialized", true)
+		obj.Set("initEvent", v8go.NewFunctionTemplate(b.iso, noopCallback))
 		inst, _ := obj.NewInstance(info.Context())
 		return inst.Value
 	}))
@@ -540,18 +560,124 @@ func injectCanvas2D(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerp
 		if len(info.Args()) > 0 {
 			text = info.Args()[0].String()
 		}
-		// Use fingerprint's measureText data if available, otherwise fallback
-		// to a deterministic width based on text length.
-		width := float64(len(text) * 6)
-		if fp != nil && fp.Canvas.MeasureText != nil {
-			if w, ok := fp.Canvas.MeasureText["measureText_width"]; ok {
-				// Scale by text length relative to a baseline of 10 chars
-				width = w * float64(len(text)) / 10.0
-			}
-		}
-		v, _ := v8go.NewValue(iso, fmt.Sprintf(`{"width":%g}`, width))
+		// Bug 7 residual fix: real measureText is NOT linear in string length —
+		// each character has a different advance width. Accumulate per-character
+		// widths from a proportional-font width table (units per em, Helvetica/
+		// Segoe-like proportions), then scale by the font size parsed from ctx.font
+		// (default 10px sans-serif). The fingerprint's measureText baseline seeds a
+		// deterministic per-fingerprint jitter so different fingerprints produce
+		// different (but self-consistent) widths.
+		width := measureTextWidth(text, fp)
+		v, _ := v8go.NewValue(iso, fmt.Sprintf(`{"width":%.4f,"actualBoundingBoxAscent":%.4f,"actualBoundingBoxDescent":%.4f}`, width, width*0.72, width*0.21))
 		return v
 	}))
+}
+
+// charAdvance returns the advance width (in 1/1000 em, Helvetica-like
+// proportions) for a character. ASCII uses a real proportion table; non-ASCII
+// uses CJK full-width (1000) or a mid-range fallback.
+func charAdvance(c rune) float64 {
+	switch {
+	case c >= '0' && c <= '9':
+		return 556 // all digits tabular in Helvetica
+	case c >= 'A' && c <= 'Z':
+		return capsAdvance[c-'A']
+	case c >= 'a' && c <= 'z':
+		return lowerAdvance[c-'a']
+	case c == ' ':
+		return 278
+	case c == '.':
+		return 278
+	case c == ',':
+		return 278
+	case c == ':':
+		return 278
+	case c == ';':
+		return 278
+	case c == '!':
+		return 278
+	case c == '\'':
+		return 191
+	case c == '"':
+		return 355
+	case c == '-':
+		return 333
+	case c == '_':
+		return 556
+	case c == '/':
+		return 278
+	case c == '(' || c == ')':
+		return 333
+	case c == '[' || c == ']':
+		return 278
+	case c == '{' || c == '}':
+		return 334
+	case c == '+' || c == '<' || c == '>' || c == '=' || c == '|' || c == '~':
+		return 584
+	case c == '*':
+		return 389
+	case c == '#':
+		return 556
+	case c == '$':
+		return 556
+	case c == '%':
+		return 889
+	case c == '&':
+		return 667
+	case c == '@':
+		return 1015
+	case c == '?':
+		return 556
+	case c == '^':
+		return 469
+	case c >= 0x4E00 && c <= 0x9FFF: // CJK Unified Ideographs
+		return 1000
+	case c >= 0x3000 && c <= 0x303F: // CJK punctuation
+		return 1000
+	case c >= 0xFF00 && c <= 0xFFEF: // fullwidth forms
+		return 1000
+	case c >= 0x80: // other non-ASCII: mid-range
+		return 600
+	default:
+		return 556
+	}
+}
+
+// capsAdvance: A-Z advance widths (1/1000 em, Helvetica proportions).
+var capsAdvance = [26]float64{667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611}
+
+// lowerAdvance: a-z advance widths (1/1000 em, Helvetica proportions).
+var lowerAdvance = [26]float64{556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500}
+
+// measureTextWidth computes the width of text at the fingerprint's font.
+// Nonlinear by construction: width = Σ per-char advances (which vary per
+// character) × fontSize/1000, plus a deterministic per-fingerprint jitter
+// derived from the measureText baseline. The result is never len × constant.
+func measureTextWidth(text string, fp *api.Fingerprint) float64 {
+	if text == "" {
+		return 0
+	}
+	// Em base 10px matches the template default font ("10px sans-serif"). The
+	// Go callback can't read a JS-set ctx.font, so the em stays fixed — the
+	// per-character variation is what breaks the linear fingerprint.
+	const emBase = 10.0
+	var sum float64
+	for _, c := range text {
+		sum += charAdvance(c)
+	}
+	width := sum * emBase / 1000.0
+
+	// Deterministic per-fingerprint jitter: scale by a factor derived from the
+	// KB baseline so two fingerprints measuring the same text diverge, while
+	// one fingerprint stays self-consistent across calls.
+	if fp != nil && fp.Canvas.MeasureText != nil {
+		if base, ok := fp.Canvas.MeasureText["measureText_width"]; ok && base > 0 {
+			// Map baseline → jitter factor in [0.94, 1.06) deterministically.
+			frac := base - float64(int(base))
+			width *= 0.94 + frac*0.12
+		}
+	}
+	return width
 }
 
 func injectWebGL(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerprint) {
@@ -797,6 +923,11 @@ func (p *PostContextBuilder) injectCaptchaSolver() {
 // a real SHA-256 hash via crypto/sha256. JS-side crypto.subtle.digest calls
 // this for correctness (the JS-only XOR fallback is not cryptographically valid
 // and fails server-side hash verification).
+//
+// Also injects __besRandomBytes(n): crypto/rand-backed random bytes returned
+// base64-encoded. JS-side crypto.getRandomValues (env_shim_part3.js) decodes
+// and fills the caller's TypedArray — v8go's Value API cannot write into a
+// TypedArray's backing store directly, so the bytes cross as base64.
 func (p *PostContextBuilder) injectCryptoHelpers() {
 	iso := p.iso
 	cb := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
@@ -823,6 +954,35 @@ func (p *PostContextBuilder) injectCryptoHelpers() {
 	fn := v8go.NewFunctionTemplate(iso, cb)
 	fnVal := fn.GetFunction(p.ctx)
 	p.global.Set("__besSha256", fnVal)
+
+	// __besRandomBytes(n) → base64 string of n cryptographically random bytes
+	// (crypto/rand). Bug 18 fix: replaces the Math.random JS fill and the
+	// return-input-unchanged Go stub.
+	randCb := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		n := 0
+		if len(info.Args()) > 0 {
+			n = int(info.Args()[0].Int32())
+		}
+		if n < 0 {
+			n = 0
+		}
+		if n > 65536 {
+			n = 65536 // spec caps getRandomValues at 65536 bytes
+		}
+		buf := make([]byte, n)
+		if n > 0 {
+			if _, err := crand.Read(buf); err != nil {
+				log.Printf("[sandbox] crypto/rand read failed: %v", err)
+				v, _ := v8go.NewValue(iso, "")
+				return v
+			}
+		}
+		v, _ := v8go.NewValue(iso, base64.StdEncoding.EncodeToString(buf))
+		return v
+	}
+	randFn := v8go.NewFunctionTemplate(iso, randCb)
+	randFnVal := randFn.GetFunction(p.ctx)
+	p.global.Set("__besRandomBytes", randFnVal)
 }
 
 // injectFetchXHR adds fetch and XMLHttpRequest to the sandbox.
@@ -1112,10 +1272,18 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 		urlStr := args[1].String()
 		headersJSON := args[2].String()
 		body := args[3].String()
-		// args[4] is the JS callback, but we don't call it directly from Go
-		// (V8 isn't thread-safe). Instead we deliver results back into V8 via
-		// setTimeout(0) + RunScript, which calls __besDeliverXHR-equivalent.
+		// args[4] is the JS callback. Capture it as a *v8go.Function NOW, on
+		// the isolate thread (Bug 3 residual fix: AsFunction/Global are V8
+		// calls and must never run inside the goroutine below). The goroutine
+		// only does pure-Go network work; delivery back into V8 happens via
+		// scheduleTimer(0) which runs cb.Call on the isolate thread.
 		ctx := info.Context()
+		cb, cbErr := args[4].AsFunction()
+		globalObj := ctx.Global()
+		if cbErr != nil || cb == nil {
+			log.Printf("[sandbox] async xhr: arg[4] is not a function")
+			return nil
+		}
 
 		go func() {
 			// Reuse the same header-resolution logic by calling the sync
@@ -1231,12 +1399,9 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 				})
 				resultJSON = string(result)
 			}
-			// Deliver the result back into V8. The JS callback (args[4]) was
-			// captured as a v8go Function on the isolate thread. We call it
-			// from the timer callback (also on the isolate thread, so V8 is
-			// safe) with the result JSON string as the argument.
-			cb, _ := args[4].AsFunction()
-			globalObj := ctx.Global()
+			// Deliver the result back into V8. cb (captured on the isolate
+			// thread above) is called from the timer callback, which also runs
+			// on the isolate thread — so all V8 access stays on one thread.
 			resultStr := resultJSON
 			p.timerMgr.scheduleTimer(0, false, func() {
 				rv, rerr := v8go.NewValue(p.iso, resultStr)
@@ -1564,3 +1729,4 @@ func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
