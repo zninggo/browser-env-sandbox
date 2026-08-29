@@ -272,6 +272,8 @@ func main() {
 		{"canvas.toDataURL starts with data:image/png;base64,", `document.createElement('canvas').toDataURL().substring(0,22)`, "data:image/png;base64,"},
 		{"canvas.toDataURL length > 1000", `String(document.createElement('canvas').toDataURL().length > 1000)`, "true"},
 		{"canvas.toDataURL has valid base64", `(function(){var u=document.createElement('canvas').toDataURL();var b=u.split(',')[1];return String(b.length>100&&/^[A-Za-z0-9+/=]+$/.test(b))})()`, "true"},
+		{"canvas.toDataURL is consistent (same call twice)", `(function(){var a=document.createElement('canvas').toDataURL();var b=document.createElement('canvas').toDataURL();return String(a===b)})()`, "true"},
+		{"canvas.toDataURL has PNG signature", `(function(){var u=document.createElement('canvas').toDataURL();var b=u.split(',')[1];var bin=atob(b.substring(0,8));return String(bin.charCodeAt(0)===137&&bin.charCodeAt(1)===80&&bin.charCodeAt(2)===78&&bin.charCodeAt(3)===71)})()`, "true"},
 		{"crypto.subtle.digest is real SHA-256", `(async function(){var b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('abc'));var h=new Uint8Array(b);var s='';for(var i=0;i<h.length;i++)s+=h[i].toString(16).padStart(2,'0');return s})()`, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
 		// ── Bug 修复验证 ──
 		{"WebGL getSupportedExtensions is array", `Array.isArray(document.createElement('canvas').getContext('webgl').getSupportedExtensions())`, "true"},
