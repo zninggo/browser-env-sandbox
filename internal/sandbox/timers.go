@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tommie/v8go"
+	"github.com/zninggo/v8go"
 )
 
 // TimerManager manages setTimeout/setInterval/requestAnimationFrame

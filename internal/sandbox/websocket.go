@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tommie/v8go"
+	"github.com/zninggo/v8go"
 )
 
 // ── RFC 6455 WebSocket protocol (pure Go, stdlib only) ──

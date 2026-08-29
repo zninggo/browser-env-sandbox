@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/tommie/v8go"
+	"github.com/zninggo/v8go"
 
 	"github.com/zninggo/bes/internal/captcha"
 	"github.com/zninggo/bes/pkg/api"

@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tommie/v8go"
+	"github.com/zninggo/v8go"
 )
 
 // workerMessage is the wire format for worker ↔ parent envelopes. Payload is
