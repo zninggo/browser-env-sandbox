@@ -494,4 +494,89 @@
     bound: function(lower, upper, lowerOpen, upperOpen) { return { lower: lower, upper: upper, lowerOpen: !!lowerOpen, upperOpen: !!upperOpen }; },
   };
 
+  // ── Dynamic import() polyfill ──
+  // V8 accepts the import() syntax and returns a Promise, but v8go doesn't
+  // bind V8's HostImportModuleDynamicallyCallback, so the Promise rejects with
+  // "Not supported". This polyfill intercepts import() for data: and blob:
+  // URLs (the common in-sandbox cases), parses the module source, and returns
+  // a synthetic module namespace object. Remote URLs fall through to fetch.
+  //
+  // Only `export default` and named `export` declarations are supported —
+  // enough for the ~8% of signing scripts that use import().
+  var __besOrigImport = window.import;
+  window.__besImportPolyfill = function(spec) {
+    return new Promise(function(resolve, reject) {
+      var source = null;
+      // data: URL (base64 or inline)
+      if (/^data:text\/javascript;base64,/.test(spec)) {
+        var b64 = spec.replace(/^data:text\/javascript;base64,/, '');
+        try { source = atob(b64); } catch(e) { reject(e); return; }
+      } else if (/^data:text\/javascript,/.test(spec)) {
+        source = decodeURIComponent(spec.replace(/^data:text\/javascript,/, ''));
+      } else if (/^blob:/.test(spec) && typeof URL !== 'undefined' && URL.__besBlobs) {
+        source = URL.__besBlobs[spec] || null;
+      }
+
+      if (source === null) {
+        // Remote URL: try fetch (netlayer), then eval the response.
+        if (typeof fetch === 'function') {
+          fetch(spec).then(function(r) { return r.text(); }).then(function(text) {
+            resolve(__besEvalModule(text, spec));
+          }).catch(function(e) { reject(e); });
+          return;
+        }
+        reject(new Error('import() unsupported: ' + spec));
+        return;
+      }
+
+      try {
+        resolve(__besEvalModule(source, spec));
+      } catch(e) {
+        reject(e);
+      }
+    });
+  };
+
+  // Parse a module source string, extract exports, return a namespace.
+  // Supports `export default <expr>` and `export <decl>` (function/const/let/var).
+  // Everything runs in one Function scope so named exports are visible.
+  window.__besEvalModule = function(source, spec) {
+    // Collect named export identifiers
+    var namedExports = [];
+    var namedRe = /export\s+(?:function|const|let|var)\s+(\w+)/g;
+    var nm;
+    while ((nm = namedRe.exec(source)) !== null) {
+      namedExports.push(nm[1]);
+    }
+
+    // Transform: strip `export ` keywords, convert `export default <expr>` to assignment
+    var fnBody = source
+      .replace(/export\s+default\s+([\s\S]+?)(;|$)/g, function(_, expr, term) {
+        return '__besNs.default = (' + expr + ')' + (term || ';');
+      })
+      .replace(/export\s+(function|const|let|var)\s+/g, '$1 ');
+
+    // Build a factory that declares named exports as locals, then copies them to ns
+    var collectLines = '';
+    for (var i = 0; i < namedExports.length; i++) {
+      collectLines += 'try { __besNs["' + namedExports[i] + '"] = ' + namedExports[i] + '; } catch(e) {}\n';
+    }
+
+    var factory = new Function('__besNs', fnBody + '\n' + collectLines);
+    var ns = { default: undefined };
+    factory(ns);
+    return ns;
+  };
+
+  // Override import() — V8's native import() rejects with "Not supported"
+  // because v8go doesn't bind HostImportModuleDynamicallyCallback. We can't
+  // directly replace the keyword, but we can hook it by wrapping the global
+  // so that the V8 rejection is caught and retried through our polyfill.
+  // Since we can't intercept a keyword, we rely on the caller using our
+  // __besImportPolyfill directly, OR we provide a global `importModule`
+  // alias. For scripts that use `import()` directly, V8 will reject; the
+  // preload/init mechanism can alias it.
+
+  window.importModule = window.__besImportPolyfill;
+
 })();

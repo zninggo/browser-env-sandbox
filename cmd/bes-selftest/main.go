@@ -293,6 +293,10 @@ func main() {
 		{"URL origin normalized (Bug 29)", `new URL('https://example.com/path?q=1').origin`, "https://example.com"},
 		// ── Worker real execution ──
 		{"Worker roundtrip postMessage (double)", `new Promise(function(res, rej){ var w = new Worker("self.onmessage = function(e){ self.postMessage(e.data * 2); };"); w.onmessage = function(e){ res(String(e.data)); }; w.onerror = function(e){ rej(new Error(String(e.message || e))); }; w.postMessage(21); setTimeout(function(){ rej(new Error("worker timeout")); }, 3000); })`, "42"},
+		// ── Dynamic import() polyfill ──
+		{"importModule exists", `typeof importModule`, "function"},
+		{"importModule default export", `importModule("data:text/javascript;base64," + btoa("export default 42")).then(function(m){ return String(m.default); })`, "42"},
+		{"importModule named exports", `importModule("data:text/javascript;base64," + btoa("export const add = function(a,b){return a+b}; export default 99;")).then(function(m){ return "add=" + m.add(2,3) + ",default=" + m.default; })`, "add=5,default=99"},
 	}
 
 	passed := 0
