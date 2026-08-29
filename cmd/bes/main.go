@@ -208,4 +208,5 @@ func cmdRun(args []string) {
 	// Flush timers
 	sess.FlushTimers(5 * time.Second)
 	sess.PerformMicrotasks()
+	sess.DrainWorkerCallbacks(500 * time.Millisecond)
 }

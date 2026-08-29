@@ -314,6 +314,23 @@ func (s *Session) PerformMicrotasks() {
 	s.ctx.PerformMicrotaskCheckpoint()
 }
 
+// DrainWorkerCallbacks runs pending worker→parent message callbacks (queued
+// by the worker outbound pump into the session's timer queue) on the parent
+// isolate thread. Call this after script execution when the host does not go
+// through EvalAwait (e.g. the `bes run` CLI) so fire-and-forget worker
+// messages still reach their onmessage handlers before disposal.
+func (s *Session) DrainWorkerCallbacks(wait time.Duration) {
+	deadline := time.Now().Add(wait)
+	for {
+		s.timers.DrainCallbacks()
+		s.ctx.PerformMicrotaskCheckpoint()
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // GetFingerprint returns the session's fingerprint.
 func (s *Session) GetFingerprint() *api.Fingerprint {
 	return s.fp

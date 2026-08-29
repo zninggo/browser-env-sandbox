@@ -11,8 +11,8 @@ import (
 	"github.com/tommie/v8go"
 )
 
-// workerMessage is the wire format for worker ↔ parent envelopes. The payload
-// is a JSON string produced JS-side (v8go callbacks exchange strings only —
+// workerMessage is the wire format for worker ↔ parent envelopes. Payload is
+// a JSON string produced JS-side (v8go callbacks exchange strings only —
 // constraint #14).
 type workerMessage struct {
 	Type    string          `json:"type"` // "message", "error", "close"
@@ -65,24 +65,24 @@ func (r *workerRegistry) remove(id int32) {
 func (r *workerRegistry) disposeAll() {
 	r.mu.Lock()
 	workers := make([]*Worker, 0, len(r.workers))
-	for id, w := range r.workers {
+	for _, w := range r.workers {
 		workers = append(workers, w)
-		delete(r.workers, id)
 	}
+	r.workers = make(map[int32]*Worker)
 	r.mu.Unlock()
 	for _, w := range workers {
 		w.terminate()
 	}
 }
 
-// Worker is a running Web Worker: a dedicated V8 Isolate executing the
-// worker script, bridged to the parent sandbox via JSON envelopes.
+// Worker is a running Web Worker: a dedicated V8 Isolate executing the worker
+// script, bridged to the parent sandbox via JSON envelopes.
 //
 // Threading model (V8 isolates are not thread-safe — constraint #11):
-//   - The worker's Isolate is touched only from its own goroutine (the
-//     "worker thread"): script run, message dispatch, and timer drains all
-//     happen there. The thread blocks on the mailbox when idle, giving the
-//     worker an independent event loop.
+//   - The worker's Isolate is touched only from its own goroutine: script
+//     run, message dispatch, and timer drains all happen there. The loop
+//     blocks on the mailbox when idle, giving the worker an independent
+//     event loop.
 //   - The parent Isolate is only touched from the parent thread: worker→
 //     parent replies are queued into the session's TimerManager callback
 //     queue, which EvalAwait drains on the parent isolate thread.
@@ -92,6 +92,7 @@ type Worker struct {
 	ctx        *v8go.Context
 	timers     *TimerManager
 	console    ConsoleSink
+	userAgent  string
 	inbound    chan string   // parent → worker mailbox (JSON envelopes)
 	outbound   chan string   // worker → parent queue (JSON envelopes)
 	stop       chan struct{} // closed by terminate()
@@ -102,8 +103,10 @@ type Worker struct {
 
 // StartWorker creates and starts a Web Worker from JS source code.
 // parentTimers is the parent session's timer manager (used by the outbound
-// pump to deliver replies on the parent isolate thread).
-func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink) (*Worker, error) {
+// pump to deliver replies on the parent isolate thread). userAgent is the
+// session fingerprint's UA so worker-side navigator.userAgent matches the
+// parent.
+func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink, userAgent string) (*Worker, error) {
 	iso := v8go.NewIsolate()
 	ctx := v8go.NewContext(iso)
 	w := &Worker{
@@ -111,6 +114,7 @@ func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink)
 		ctx:        ctx,
 		timers:     NewTimerManager(),
 		console:    console,
+		userAgent:  userAgent,
 		inbound:    make(chan string, 64),
 		outbound:   make(chan string, 64),
 		stop:       make(chan struct{}),
@@ -132,7 +136,11 @@ func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink)
 			payload = info.Args()[0].String()
 		}
 		msg, _ := json.Marshal(workerMessage{Type: "message", Payload: json.RawMessage(payload)})
-		w.sendOutbound(string(msg))
+		select {
+		case w.outbound <- string(msg):
+		default:
+			log.Printf("[sandbox] worker %d outbound queue full, message dropped", w.id)
+		}
 		return nil
 	}
 	if fn := v8go.NewFunctionTemplate(iso, nativePost).GetFunction(ctx); fn != nil {
@@ -141,7 +149,10 @@ func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink)
 
 	// worker-side close(): notify the loop to exit via the outbound queue.
 	nativeClose := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
-		w.sendOutbound(`{"type":"close"}`)
+		select {
+		case w.outbound <- `{"type":"close"}`:
+		default:
+		}
 		return nil
 	}
 	if fn := v8go.NewFunctionTemplate(iso, nativeClose).GetFunction(ctx); fn != nil {
@@ -157,7 +168,10 @@ func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink)
 	// to the parent as an error envelope; the worker does not stay alive.
 	if _, err := ctx.RunScript(source, "worker.js"); err != nil {
 		errMsg, _ := json.Marshal(workerMessage{Type: "error", Payload: json.RawMessage(jsonString(err.Error()))})
-		w.sendOutbound(string(errMsg))
+		select {
+		case w.outbound <- string(errMsg):
+		default:
+		}
 		w.terminate()
 		return nil, fmt.Errorf("worker script failed: %w", err)
 	}
@@ -169,10 +183,22 @@ func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink)
 	return w, nil
 }
 
-// injectWorkerEnv installs the worker-side environment: timers, console, and
-// the worker JS shim (postMessage/onmessage surface, base64, scope flags).
+// injectWorkerEnv installs the worker-side environment: navigator (UA from
+// the session fingerprint), timers, console, and the worker JS shim
+// (postMessage/onmessage surface, base64, scope flags).
 func (w *Worker) injectWorkerEnv() error {
 	iso, ctx := w.iso, w.ctx
+
+	// navigator with the fingerprint UA (workers have a navigator object but
+	// no DOM; signing scripts commonly read navigator.userAgent).
+	if w.userAgent != "" {
+		navTmpl := v8go.NewObjectTemplate(iso)
+		navTmpl.Set("userAgent", w.userAgent)
+		navTmpl.Set("hardwareConcurrency", int32(8))
+		if navVal, err := navTmpl.NewInstance(ctx); err == nil && navVal != nil {
+			w.global().Set("navigator", navVal)
+		}
+	}
 
 	// Timers inside the worker: own manager, drained by the worker loop.
 	tm := w.timers
@@ -219,16 +245,6 @@ func (w *Worker) injectWorkerEnv() error {
 // global returns the worker's global object (worker thread only).
 func (w *Worker) global() *v8go.Object {
 	return w.ctx.Global()
-}
-
-// sendOutbound queues a message for the parent without blocking the worker
-// thread indefinitely (drops on overflow, mirroring the console sink policy).
-func (w *Worker) sendOutbound(msg string) {
-	select {
-	case w.outbound <- msg:
-	default:
-		log.Printf("[sandbox] worker %d outbound queue full, message dropped", w.id)
-	}
 }
 
 // terminate stops the worker loop, waits for it to exit, then disposes the
@@ -302,47 +318,16 @@ func (w *Worker) dispatchMessage(payloadJSON string) {
 	}
 }
 
-// startParentPump forwards worker→parent envelopes onto the parent isolate
-// thread. It runs on its own goroutine but never touches V8 directly: each
-// envelope becomes a timer-queue callback carrying the parent context, and
-// that callback executes during EvalAwait's drain on the parent isolate
-// thread.
-func (w *Worker) startParentPump(parentTimers *TimerManager, parentCtx *v8go.Context) {
-	wRef := w
-	go func() {
-		for {
-			select {
-			case <-wRef.stop:
-				return
-			case raw, ok := <-wRef.outbound:
-				if !ok {
-					return
-				}
-				var msg workerMessage
-				if err := json.Unmarshal([]byte(raw), &msg); err != nil {
-					continue
-				}
-				switch msg.Type {
-				case "message", "error":
-					parentTimers.scheduleTimer(0, false, func() {
-						// Runs on the parent isolate thread via the timer drain.
-						payload := "null"
-						if len(msg.Payload) > 0 {
-							payload = string(msg.Payload)
-						}
-						call := fmt.Sprintf(
-							"typeof __besWorkerOnParentMessage === 'function' && __besWorkerOnParentMessage(%d, %q, %s)",
-							wRef.id, msg.Type, jsonString(payload))
-						if _, err := parentCtx.RunScript(call, "worker-parent-deliver.js"); err != nil {
-							log.Printf("[sandbox] worker parent deliver error: %v", err)
-						}
-					})
-				case "close":
-					return
-				}
-			}
+// joinStrings joins with a separator (avoids importing strings for one use).
+func joinStrings(parts []string, sep string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += sep
 		}
-	}()
+		out += p
+	}
+	return out
 }
 
 // workerEnvJS is the worker-side JS surface. Precondition: the Go side has
@@ -429,7 +414,7 @@ func injectWorkerConstructor(p *PostContextBuilder, sess *Session) {
 		if args := info.Args(); len(args) > 0 {
 			source = args[0].String()
 		}
-		w, err := StartWorker(source, parentTimers, sess.consoleSink)
+		w, err := StartWorker(source, parentTimers, sess.consoleSink, p.userAgent())
 		if err != nil {
 			log.Printf("[sandbox] worker create failed: %v", err)
 			// Return -1; the JS wrapper fires onerror.
@@ -560,14 +545,45 @@ func injectWorkerConstructor(p *PostContextBuilder, sess *Session) {
 	}
 }
 
-// joinStrings joins with a separator (avoids importing strings for one use).
-func joinStrings(parts []string, sep string) string {
-	out := ""
-	for i, p := range parts {
-		if i > 0 {
-			out += sep
+// startParentPump forwards worker→parent envelopes onto the parent isolate
+// thread. It runs on its own goroutine but never touches V8 directly: each
+// envelope becomes a timer-queue callback carrying the parent context, and
+// that callback executes during EvalAwait's drain on the parent isolate
+// thread.
+func (w *Worker) startParentPump(parentTimers *TimerManager, parentCtx *v8go.Context) {
+	wRef := w
+	go func() {
+		for {
+			select {
+			case <-wRef.stop:
+				return
+			case raw, ok := <-wRef.outbound:
+				if !ok {
+					return
+				}
+				var msg workerMessage
+				if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+					continue
+				}
+				switch msg.Type {
+				case "message", "error":
+					parentTimers.scheduleTimer(0, false, func() {
+						// Runs on the parent isolate thread via the timer drain.
+						payload := "null"
+						if len(msg.Payload) > 0 {
+							payload = string(msg.Payload)
+						}
+						call := fmt.Sprintf(
+							"typeof __besWorkerOnParentMessage === 'function' && __besWorkerOnParentMessage(%d, %q, %s)",
+							wRef.id, msg.Type, jsonString(payload))
+						if _, err := parentCtx.RunScript(call, "worker-parent-deliver.js"); err != nil {
+							log.Printf("[sandbox] worker parent deliver error: %v", err)
+						}
+					})
+				case "close":
+					return
+				}
+			}
 		}
-		out += p
-	}
-	return out
+	}()
 }

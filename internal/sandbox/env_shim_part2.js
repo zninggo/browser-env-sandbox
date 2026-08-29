@@ -92,6 +92,8 @@
   // Bug 29 fix: full parse handling IPv6 ([::1]:8080 — split(':') breaks it),
   // user:pass@ credentials, default-port omission, and WHATWG-normalized
   // origin/protocol/host fields.
+  var urlCounter = 0;
+  var urlStore = {};
   window.URL = window.URL || function(url, base) {
     var fullUrl = (base && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(String(url))) ? String(base) + String(url) : String(url);
     var parser = { href: fullUrl };
@@ -136,7 +138,20 @@
     parser.toJSON = function() { return this.href; };
     return parser;
   };
-  window.URL.createObjectURL = function(blob) { return 'blob:https://example.com/' + (++urlCounter); };
+  window.URL.createObjectURL = function(blob) {
+    var url = 'blob:https://example.com/' + (++urlCounter);
+    // Store the source so Worker(blob-URL) can read it back (worker.go's
+    // Worker class resolves blob URLs through this registry).
+    if (blob && typeof blob._besBytes === 'function') {
+      var bytes = blob._besBytes();
+      var s = '';
+      for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      urlStore[url] = s;
+    }
+    return url;
+  };
+  // Blob-URL lookup for the Worker bridge (read-only alias of urlStore).
+  window.URL.__besBlobs = urlStore;
   window.URL.revokeObjectURL = function(url) { delete urlStore[url]; };
   // Bug 30 fix: append preserves multiple values; set overwrites.
   // Internal storage: { name: [val1, val2] }
@@ -406,15 +421,19 @@
   window.WebSocket.CLOSING = 2;
   window.WebSocket.CLOSED = 3;
 
-  // ── Worker (stub) ──
-  window.Worker = function(url, options) {
-    this.onmessage = null;
-    this.onerror = null;
-    this.postMessage = function() {};
-    this.terminate = function() {};
-    this.addEventListener = function() {};
-    this.removeEventListener = function() {};
-  };
+  // ── Worker (real impl injected from Go in worker.go) ──
+  // A placeholder is defined here so `typeof Worker` checks pass even if the
+  // Go-side injection ever fails; injectWorkerConstructor overwrites this.
+  if (typeof window.Worker === 'undefined') {
+    window.Worker = function(url, options) {
+      this.onmessage = null;
+      this.onerror = null;
+      this.postMessage = function() {};
+      this.terminate = function() {};
+      this.addEventListener = function() {};
+      this.removeEventListener = function() {};
+    };
+  }
 
   // ── BroadcastChannel (enhance existing stub) ──
   // Already defined in env builder, but enhance it
