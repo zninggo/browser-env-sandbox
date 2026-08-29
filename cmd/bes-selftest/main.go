@@ -4,7 +4,13 @@
 package main
 
 import (
+	"bufio"
+	"crypto/sha1"
+	"encoding/base64"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -342,6 +348,64 @@ func main() {
 		passed++
 	}
 
+	// ── WebSocket real connection test ──
+	// Start a local echo WebSocket server (pure Go, no external dependency).
+	fmt.Println("\n── WebSocket real connection ──")
+	wsAddr := startEchoWSServer()
+	wsURL := "ws://" + wsAddr + "/echo"
+
+	wsResult, wsErr := sess.EvalAwait(`
+		new Promise(function(res, rej) {
+			var ws = new WebSocket("` + wsURL + `");
+			var gotOpen = false;
+			var gotEcho = false;
+			ws.onopen = function(e) {
+				gotOpen = true;
+				ws.send("hello bes");
+			};
+			ws.onmessage = function(e) {
+				if (e.data === "hello bes") {
+					gotEcho = true;
+					ws.close(1000, "done");
+				}
+			};
+			ws.onclose = function(e) {
+				if (gotOpen && gotEcho) {
+					res("open,echo,close:" + e.code);
+				} else {
+					rej(new Error("open=" + gotOpen + " echo=" + gotEcho));
+				}
+			};
+			ws.onerror = function(e) {
+				rej(new Error("ws error: " + e.message));
+			};
+			setTimeout(function() { rej(new Error("ws timeout")); }, 5000);
+		})
+	`, 8*time.Second)
+
+	if wsErr != nil {
+		fmt.Printf("  ❌ WebSocket test error: %v\n", wsErr)
+		failed++
+	} else if strings.Contains(wsResult, "open,echo,close") {
+		fmt.Printf("  ✅ WebSocket connect → send → echo → close: %s\n", truncate(wsResult, 60))
+		passed++
+	} else {
+		fmt.Printf("  ❌ WebSocket test unexpected: %s\n", truncate(wsResult, 60))
+		failures = append(failures, fmt.Sprintf("  ❌ WebSocket: got '%s', expected open,echo,close", wsResult))
+		failed++
+	}
+
+	// WebSocket readyState constants
+	wsConstResult, _ := sess.Eval(`String(WebSocket.OPEN) + "," + String(WebSocket.CLOSED)`)
+	if wsConstResult == "1,3" {
+		passed++
+		fmt.Printf("  ✅ WebSocket readyState constants (OPEN=1, CLOSED=3)\n")
+	} else {
+		failed++
+		failures = append(failures, fmt.Sprintf("  ❌ WebSocket constants: got '%s', expected '1,3'", wsConstResult))
+		fmt.Printf("  ❌ WebSocket constants: got '%s', expected '1,3'\n", wsConstResult)
+	}
+
 	// Network header consistency test: the fingerprint must drive outbound
 	// request headers end-to-end (navigator.languages → Accept-Language,
 	// navigator.userAgent → User-Agent). Uses a mock NetHandler to capture
@@ -460,4 +524,131 @@ func lookupHeader(headers map[string]string, name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// startEchoWSServer starts a minimal RFC 6455 WebSocket echo server on a
+// random localhost port. Returns "host:port". The server runs until main()
+// exits. It accepts connections, completes the handshake, and echoes back
+// every text frame it receives.
+func startEchoWSServer() string {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		panic("echo ws server: " + err.Error())
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handleEchoWS(conn)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func handleEchoWS(conn net.Conn) {
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	req, err := http.ReadRequest(br)
+	if err != nil {
+		return
+	}
+	key := req.Header.Get("Sec-WebSocket-Key")
+	accept := wsAcceptKeyEcho(key)
+
+	resp := "HTTP/1.1 101 Switching Protocols\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
+	if _, err := conn.Write([]byte(resp)); err != nil {
+		return
+	}
+
+	for {
+		opcode, payload, err := readWSFrameEcho(conn)
+		if err != nil {
+			return
+		}
+		switch opcode {
+		case 0x8: // close
+			return
+		case 0x1, 0x2: // text or binary — echo back
+			writeWSFrameEcho(conn, opcode, payload)
+		}
+	}
+}
+
+func wsAcceptKeyEcho(key string) string {
+	h := sha1.New()
+	h.Write([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
+
+func readWSFrameEcho(r io.Reader) (byte, []byte, error) {
+	hdr := make([]byte, 2)
+	if _, err := io.ReadFull(r, hdr); err != nil {
+		return 0, nil, err
+	}
+	opcode := hdr[0] & 0x0F
+	masked := hdr[1]&0x80 != 0
+	payloadLen := int(hdr[1] & 0x7F)
+	if payloadLen == 126 {
+		b := make([]byte, 2)
+		if _, err := io.ReadFull(r, b); err != nil {
+			return 0, nil, err
+		}
+		payloadLen = int(b[0])<<8 | int(b[1])
+	} else if payloadLen == 127 {
+		b := make([]byte, 8)
+		if _, err := io.ReadFull(r, b); err != nil {
+			return 0, nil, err
+		}
+		payloadLen = 0
+		for i := 0; i < 8; i++ {
+			payloadLen = payloadLen<<8 | int(b[i])
+		}
+	}
+	var maskKey []byte
+	if masked {
+		maskKey = make([]byte, 4)
+		if _, err := io.ReadFull(r, maskKey); err != nil {
+			return 0, nil, err
+		}
+	}
+	payload := make([]byte, payloadLen)
+	if payloadLen > 0 {
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return 0, nil, err
+		}
+	}
+	if masked {
+		for i := range payload {
+			payload[i] ^= maskKey[i%4]
+		}
+	}
+	return opcode, payload, nil
+}
+
+func writeWSFrameEcho(w io.Writer, opcode byte, data []byte) {
+	var buf []byte
+	buf = append(buf, 0x80|opcode) // FIN + opcode
+	// Server frames are unmasked.
+	if len(data) < 126 {
+		buf = append(buf, byte(len(data)))
+	} else if len(data) < 65536 {
+		buf = append(buf, 126)
+		buf = append(buf, byte(len(data)>>8), byte(len(data)))
+	} else {
+		buf = append(buf, 127)
+		b := make([]byte, 8)
+		v := uint64(len(data))
+		for i := 7; i >= 0; i-- {
+			b[i] = byte(v)
+			v >>= 8
+		}
+		buf = append(buf, b...)
+	}
+	buf = append(buf, data...)
+	w.Write(buf)
 }
