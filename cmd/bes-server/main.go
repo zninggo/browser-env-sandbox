@@ -156,6 +156,7 @@ func checkAndUpdateFp(dataPath string) {
 	if updated {
 		log.Printf("[bes-server] fingerprint data updated to %s, hot-reloading...", version)
 		fpengine.ReloadFpRealData()
+		fpengine.ReloadCanvasDataset()
 		stats := fpengine.FpDataStats()
 		log.Printf("[bes-server] fp data loaded: %d GPUs, %d screens, %d hwConc, %d devMem",
 			stats["gpus"], stats["screens"], stats["hardware_concurrency"], stats["device_memory"])
