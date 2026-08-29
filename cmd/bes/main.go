@@ -69,6 +69,7 @@ func cmdUpdateFP(args []string) {
 		fmt.Printf("\nFingerprint data updated to version %s\n", version)
 		fmt.Printf("Data file: %s\n", dataPath)
 		fpengine.ReloadFpRealData()
+		fpengine.ReloadCanvasDataset()
 		stats := fpengine.FpDataStats()
 		fmt.Printf("Loaded: %d GPUs, %d screens, %d hardwareConcurrency, %d deviceMemory\n",
 			stats["gpus"], stats["screens"], stats["hardware_concurrency"], stats["device_memory"])
