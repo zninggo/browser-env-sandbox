@@ -477,6 +477,76 @@ func main() {
 		netSess.Dispose()
 	}
 
+	// ── Fingerprint joint distribution sanity ──
+	// Sample 100 fingerprints and verify GPU/Screen are OS-consistent.
+	fmt.Println("\n── Fingerprint joint distribution ──")
+	jointOK := true
+	for i := 0; i < 100; i++ {
+		testOS := "windows"
+		if i%3 == 1 {
+			testOS = "macos"
+		} else if i%3 == 2 {
+			testOS = "linux"
+		}
+		fp, err := fpEng.Generate(uint64(i+1), "chrome", testOS)
+		if err != nil {
+			jointOK = false
+			break
+		}
+		// macOS GPU must not contain Direct3D11; must contain Metal or Apple
+		if testOS == "macos" {
+			if strings.Contains(fp.GPU.Renderer, "Direct3D11") {
+				jointOK = false
+				failures = append(failures, fmt.Sprintf("  ❌ joint: macOS GPU has Direct3D11: %s", fp.GPU.Renderer))
+				break
+			}
+			if !strings.Contains(fp.GPU.Renderer, "Metal") && !strings.Contains(fp.GPU.Vendor, "Apple") {
+				jointOK = false
+				failures = append(failures, fmt.Sprintf("  ❌ joint: macOS GPU not Metal/Apple: %s", fp.GPU.Renderer))
+				break
+			}
+		}
+		// Windows GPU must contain Direct3D11; must not contain Metal/Apple
+		if testOS == "windows" {
+			if !strings.Contains(fp.GPU.Renderer, "Direct3D11") {
+				jointOK = false
+				failures = append(failures, fmt.Sprintf("  ❌ joint: Windows GPU missing Direct3D11: %s", fp.GPU.Renderer))
+				break
+			}
+			if strings.Contains(fp.GPU.Renderer, "Metal") || strings.Contains(fp.GPU.Vendor, "Apple") {
+				jointOK = false
+				failures = append(failures, fmt.Sprintf("  ❌ joint: Windows GPU has Metal/Apple: %s", fp.GPU.Renderer))
+				break
+			}
+		}
+		// Linux GPU must not contain Direct3D11 or Metal
+		if testOS == "linux" {
+			if strings.Contains(fp.GPU.Renderer, "Direct3D11") || strings.Contains(fp.GPU.Renderer, "Metal") {
+				jointOK = false
+				failures = append(failures, fmt.Sprintf("  ❌ joint: Linux GPU has D3D11/Metal: %s", fp.GPU.Renderer))
+				break
+			}
+		}
+		// macOS screen should have colorDepth 30 (Retina) in most cases
+		cd, _ := fp.Screen["colorDepth"].(int)
+		if testOS == "macos" && cd != 30 {
+			// Not a hard failure — some macOS configs may have 24, but flag it
+			// only if we see 32 (Windows-typical)
+			if cd == 32 {
+				jointOK = false
+				failures = append(failures, fmt.Sprintf("  ❌ joint: macOS screen colorDepth=32 (Windows-typical)"))
+				break
+			}
+		}
+	}
+	if jointOK {
+		passed++
+		fmt.Printf("  ✅ 100 fingerprint samples: GPU/Screen OS-consistent (windows/macos/linux)\n")
+	} else {
+		failed++
+		fmt.Printf("  ❌ Fingerprint joint distribution check failed\n")
+	}
+
 	// Summary
 	fmt.Printf("\n══════════════════════════════════\n")
 	fmt.Printf("  Results: %d passed, %d failed, %d total\n", passed, failed, passed+failed)
