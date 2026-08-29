@@ -95,6 +95,13 @@ func LoadCanvasDataset() (CanvasDataset, error) {
 
 // loadSnapshot returns the current snapshot, triggering a lazy load if none
 // exists yet. It is the single consolidated lazy-load path.
+//
+// The trailing fallback re-reads the file directly when a concurrent Reload
+// cleared the published snapshot in the window between Do's return and the
+// final Load. Without it, a Load sharing a sync.Once with an in-flight first
+// loader (which does not re-run the func) would observe nil even though the
+// dataset file exists. The fallback returns a fresh immutable snapshot without
+// publishing it, which is safe — all snapshots are read-only after creation.
 func loadSnapshot() *canvasState {
 	if st := canvasDatasetState.Load(); st != nil {
 		return st
@@ -107,7 +114,14 @@ func loadSnapshot() *canvasState {
 		s := loadCanvasDatasetFromFile()
 		canvasDatasetState.Store(&s)
 	})
-	return canvasDatasetState.Load()
+	if st := canvasDatasetState.Load(); st != nil {
+		return st
+	}
+	// A concurrent Reload cleared the snapshot after Do returned (the Once
+	// was already used, so the func did not re-run to republish). Read the
+	// file directly rather than return nil.
+	s := loadCanvasDatasetFromFile()
+	return &s
 }
 
 // LookupCanvasDataset returns the pre-collected toDataURL() value for the
