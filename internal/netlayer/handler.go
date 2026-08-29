@@ -28,6 +28,10 @@ const (
 	ModeLive   Mode = "live"
 )
 
+// maxRecordings bounds the in-memory request recording to prevent unbounded
+// growth. When exceeded, the oldest recordings are dropped.
+const maxRecordings = 1000
+
 // Handler processes XHR/fetch requests from the sandbox.
 type Handler struct {
 	mode   Mode
@@ -99,6 +103,10 @@ func (h *Handler) Request(method, urlStr string, headers map[string]string, body
 		h.recordings = append(h.recordings, RecordedRequest{
 			Method: method, URL: urlStr, Headers: headers, Body: string(body),
 		})
+		// Bound memory: once the cap is exceeded, drop the oldest recordings.
+		if len(h.recordings) > maxRecordings {
+			h.recordings = h.recordings[len(h.recordings)-maxRecordings:]
+		}
 		h.mu.Unlock()
 	}
 

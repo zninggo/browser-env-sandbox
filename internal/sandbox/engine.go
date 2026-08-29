@@ -80,6 +80,7 @@ type Session struct {
 	consoleSink ConsoleSink
 	disposed    bool
 	mu          sync.Mutex
+	pool        *IsolatePool // Bug 1 fix: return Isolate on Dispose
 }
 
 // NetHandler handles network requests from within the sandbox.
@@ -181,6 +182,7 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 		cookieStore: cookieStore,
 		timers:      timerMgr,
 		consoleSink: consoleSink,
+		pool:        e.pool, // Bug 1 fix: return Isolate on Dispose
 	}
 
 	log.Printf("[sandbox] session %s created: %s @ %s", sess.ID, fp.Browser.Name+"/"+fp.Browser.Version, fp.OS.Name)
@@ -197,8 +199,6 @@ func (s *Session) Eval(code string) (string, error) {
 // EvalAwait executes JavaScript; a Promise result is awaited by draining
 // the timer loop + microtask checkpoints until it settles or the timeout
 // elapses. Non-Promise results return immediately.
-// (EvalWithTimeout in advanced.go is the different primitive: it terminates
-// long-running *synchronous* execution.)
 func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -216,8 +216,6 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 
 	// Await Promise results: poll pending timers + microtask checkpoint so
 	// setTimeout-driven resolution actually runs, up to the timeout.
-	// Also drain async XHR/fetch (__besPendingXHR) so network-driven
-	// Promises resolve before the eval returns.
 	if val.IsPromise() {
 		p, err := val.AsPromise()
 		if err != nil {
@@ -225,12 +223,17 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 		}
 		deadline := time.Now().Add(timeout)
 		for {
+			s.timers.DrainCallbacks() // Bug 2 fix: execute queued callbacks on Isolate thread
 			s.timers.Flush(100 * time.Millisecond)
 			s.ctx.PerformMicrotaskCheckpoint()
 			switch p.State() {
 			case v8go.Fulfilled:
 				if pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js"); perr == nil && pending != nil {
 					if pending.String() != "0" {
+						// Bug 13 fix: check deadline before continuing
+						if time.Now().After(deadline) {
+							return "", fmt.Errorf("promise fulfilled but %d XHR still pending past %v timeout", pending.String(), timeout)
+						}
 						continue
 					}
 				}
@@ -248,6 +251,7 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 	// calls settle before the eval returns.
 	deadline := time.Now().Add(timeout)
 	for {
+		s.timers.DrainCallbacks() // Bug 2 fix
 		s.timers.Flush(100 * time.Millisecond)
 		s.ctx.PerformMicrotaskCheckpoint()
 		pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js")
@@ -263,7 +267,10 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 }
 
 // EvalRaw executes JavaScript and returns the raw v8go Value.
+// Bug 15 fix: acquire s.mu to prevent concurrent V8 access.
 func (s *Session) EvalRaw(code string) (*v8go.Value, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.ctx.RunScript(code, "sandbox-eval.js")
 }
 
@@ -488,21 +495,27 @@ func (s *Session) ConsoleSink() ConsoleSink {
 }
 
 // Dispose releases all resources.
+// Bug 1 fix: return Isolate to pool.
+// Bug 14 fix: acquire s.mu to prevent concurrent V8 access during disposal.
 func (s *Session) Dispose() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.disposed {
 		return
 	}
 	s.disposed = true
 	s.timers.StopAll()
 	s.ctx.Close()
-	// Note: Isolate is returned to pool by Engine, not disposed here
+	// Bug 1 fix: return Isolate to pool for reuse (prevents leak)
+	if s.pool != nil {
+		s.pool.Put(s.iso)
+	}
 	log.Printf("[sandbox] session %s disposed", s.ID)
 }
 
-// Close returns the Isolate to the pool (called by Engine).
+// close is kept for backward compatibility; Dispose now handles pool return.
 func (s *Session) close(pool *IsolatePool) {
 	s.Dispose()
-	pool.Put(s.iso)
 }
 
 func generateSessionID() string {

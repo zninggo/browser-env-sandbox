@@ -8,7 +8,6 @@ package bridge
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -61,7 +60,6 @@ func (b *consoleBroadcaster) Write(level, message string) {
 		Timestamp: time.Now().UnixMilli(),
 	}
 	b.mu.RLock()
-	log.Printf("[DBG] Write level=%s subs=%d msg=%q", level, len(b.subs), message)
 	for ch := range b.subs {
 		select {
 		case ch <- msg:
@@ -76,7 +74,6 @@ func (b *consoleBroadcaster) subscribe() (<-chan ConsoleMessage, func()) {
 	ch := make(chan ConsoleMessage, 256)
 	b.mu.Lock()
 	b.subs[ch] = struct{}{}
-	log.Printf("[DBG] console subscribe added; total subs=%d", len(b.subs))
 	b.mu.Unlock()
 
 	unsub := func() {
@@ -104,7 +101,6 @@ func newNetworkBroadcaster() *networkBroadcaster {
 // emit pushes a network event to all subscribers (non-blocking).
 func (b *networkBroadcaster) emit(evt NetworkEvent) {
 	b.mu.RLock()
-	log.Printf("[DBG] Network emit subs=%d", len(b.subs))
 	for ch := range b.subs {
 		select {
 		case ch <- evt:
@@ -174,8 +170,7 @@ func (s *Service) CreateSession(opts api.SessionOptions) (string, *api.Fingerpri
 	}
 	// The factory above created the per-session broadcaster; pull it back off
 	// the session so we (and the SSE handlers) can subscribe to it.
-	cb, ok := sess.ConsoleSink().(*consoleBroadcaster)
-	log.Printf("[DBG] CreateSession: ConsoleSink type-assert ok=%v cb==nil=%v", ok, cb == nil)
+	cb, _ := sess.ConsoleSink().(*consoleBroadcaster)
 	if cb == nil {
 		// Defensive: factory wasn't set — create an idle broadcaster so SSE
 		// still connects even though it will receive nothing.

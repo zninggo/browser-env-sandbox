@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -16,6 +17,12 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/hpack"
 )
+
+// errNoH2ALPN is returned by requestH2 when the server's ALPN response does
+// not offer HTTP/2. It is the only error that should trigger an HTTP/1.1
+// retry; all other request failures are returned as-is to avoid re-sending
+// non-idempotent requests (e.g. a POST that already executed).
+var errNoH2ALPN = errors.New("ALPN did not negotiate h2")
 
 // Chrome HTTP/2 fingerprint constants.
 // Captured from real Chromium 151 via tls.peet.ws
@@ -79,7 +86,7 @@ func (c *UTLSClient) requestH2(ctx context.Context, method, reqURL string, heade
 	}
 	cs := tlsConn.ConnectionState()
 	if cs.NegotiatedProtocol != "h2" {
-		return nil, fmt.Errorf("ALPN did not negotiate h2 (got %q)", cs.NegotiatedProtocol)
+		return nil, fmt.Errorf("%w (got %q)", errNoH2ALPN, cs.NegotiatedProtocol)
 	}
 
 	// 3. Set deadline.

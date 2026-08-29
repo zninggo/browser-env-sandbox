@@ -15,12 +15,13 @@ import (
 
 // Manager manages multiple isolated sandbox sessions.
 type Manager struct {
-	mu         sync.RWMutex
-	sessions   map[string]*ManagedSession
-	fpEngine   *fpengine.Engine
-	sbEngine   *sandbox.Engine
-	proxyPool  *netlayer.ProxyPool
+	mu          sync.RWMutex
+	sessions    map[string]*ManagedSession
+	fpEngine    *fpengine.Engine
+	sbEngine    *sandbox.Engine
+	proxyPool   *netlayer.ProxyPool
 	idleTimeout time.Duration
+	done        chan struct{}
 }
 
 // ManagedSession wraps a sandbox.Session with session-unique resources.
@@ -44,6 +45,7 @@ func New(fpEng *fpengine.Engine, sbEng *sandbox.Engine, proxyPool *netlayer.Prox
 		sbEngine:    sbEng,
 		proxyPool:   proxyPool,
 		idleTimeout: 30 * time.Minute,
+		done:        make(chan struct{}),
 	}
 	// Start idle cleanup goroutine
 	go m.cleanupIdle()
@@ -96,8 +98,8 @@ func (m *Manager) Create(opts api.SessionOptions) (*ManagedSession, error) {
 
 // Get retrieves a session by ID.
 func (m *Manager) Get(id string) (*ManagedSession, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	ms, ok := m.sessions[id]
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", id)
@@ -159,15 +161,26 @@ func (ms *ManagedSession) Eval(code string) (string, error) {
 func (m *Manager) cleanupIdle() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		m.mu.Lock()
-		now := time.Now()
-		for id, ms := range m.sessions {
-			if now.Sub(ms.LastActive) > m.idleTimeout {
-				ms.Sandbox.Dispose()
-				delete(m.sessions, id)
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-ticker.C:
+			m.mu.Lock()
+			now := time.Now()
+			for id, ms := range m.sessions {
+				if now.Sub(ms.LastActive) > m.idleTimeout {
+					ms.Sandbox.Dispose()
+					delete(m.sessions, id)
+				}
 			}
+			m.mu.Unlock()
 		}
-		m.mu.Unlock()
 	}
+}
+
+// Dispose stops the idle-cleanup goroutine and closes all sessions.
+func (m *Manager) Dispose() {
+	close(m.done)
+	m.CloseAll()
 }
