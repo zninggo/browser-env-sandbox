@@ -189,9 +189,16 @@ func cmdRun(args []string) {
 			fmt.Fprintf(os.Stderr, "Error reading script: %v\n", err)
 			os.Exit(1)
 		}
-		if err := sess.LoadScript(*scriptFile, string(content)); err != nil {
+		// Use EvalAwait instead of LoadScript so the timer/microtask drain
+		// loop runs — worker→parent messages delivered via scheduleTimer(0)
+		// need the drain loop to execute their callbacks on the isolate thread.
+		result, err := sess.EvalAwait(string(content), 30*time.Second)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Script error: %v\n", err)
 			os.Exit(1)
+		}
+		if result != "" {
+			fmt.Printf("Result: %s\n", result)
 		}
 		fmt.Println("Script loaded successfully")
 	}
@@ -205,8 +212,8 @@ func cmdRun(args []string) {
 		fmt.Printf("Result: %s\n", result)
 	}
 
-	// Flush timers
+	// Flush timers + drain worker callbacks (fire-and-forget worker messages)
 	sess.FlushTimers(5 * time.Second)
 	sess.PerformMicrotasks()
-	sess.DrainWorkerCallbacks(500 * time.Millisecond)
+	sess.DrainWorkerCallbacks(3 * time.Second)
 }

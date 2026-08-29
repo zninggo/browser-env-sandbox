@@ -257,15 +257,20 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
-	// Non-Promise: drain pending async XHR/fetch so fire-and-forget network
-	// calls settle before the eval returns.
+	// Non-Promise: drain pending async XHR/fetch + worker messages so
+	// fire-and-forget calls settle before the eval returns. Worker replies
+	// arrive via scheduleTimer(0) into callbackQueue; DrainCallbacks executes
+	// them on this (isolate) thread. Spin for a short grace period even when
+	// no XHR is pending, so worker onmessage callbacks get a chance to run.
 	deadline := time.Now().Add(timeout)
+	grace := time.Now().Add(500 * time.Millisecond) // minimum spin for worker msgs
 	for {
 		s.timers.DrainCallbacks() // Bug 2 fix
 		s.timers.Flush(100 * time.Millisecond)
 		s.ctx.PerformMicrotaskCheckpoint()
 		pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js")
-		if perr != nil || pending == nil || pending.String() == "0" {
+		xhrBusy := perr == nil && pending != nil && pending.String() != "0"
+		if !xhrBusy && time.Now().After(grace) {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -314,20 +319,20 @@ func (s *Session) PerformMicrotasks() {
 	s.ctx.PerformMicrotaskCheckpoint()
 }
 
-// DrainWorkerCallbacks runs pending worker→parent message callbacks (queued
-// by the worker outbound pump into the session's timer queue) on the parent
-// isolate thread. Call this after script execution when the host does not go
-// through EvalAwait (e.g. the `bes run` CLI) so fire-and-forget worker
-// messages still reach their onmessage handlers before disposal.
+// DrainWorkerCallbacks runs pending worker→parent message callbacks on the
+// parent isolate thread. The worker outbound pump uses scheduleTimer(0) to
+// deliver replies, which fires into callbackQueue via a goroutine. This
+// method spins on DrainCallbacks (non-blocking) + short sleeps to give those
+// goroutines time to land, up to `wait`.
+//
+// Unlike FlushTimers (which blocks waiting for timer entries), this only
+// drains the callback queue — no deadlock with the pump's timer goroutines.
 func (s *Session) DrainWorkerCallbacks(wait time.Duration) {
 	deadline := time.Now().Add(wait)
-	for {
+	for time.Now().Before(deadline) {
 		s.timers.DrainCallbacks()
 		s.ctx.PerformMicrotaskCheckpoint()
-		if time.Now().After(deadline) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
