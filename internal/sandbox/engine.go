@@ -288,17 +288,23 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 	// Non-Promise: drain pending async XHR/fetch + worker messages so
 	// fire-and-forget calls settle before the eval returns. Worker replies
 	// arrive via scheduleTimer(0) into callbackQueue; DrainCallbacks executes
-	// them on this (isolate) thread. Spin for a short grace period even when
-	// no XHR is pending, so worker onmessage callbacks get a chance to run.
+	// them on this (isolate) thread.
+	//
+	// Only spin while there is actual async work outstanding — a pending XHR,
+	// a queued callback (worker reply / fired timer), or a registered timer.
+	// When none of those are pending there is nothing left to drain, so return
+	// immediately instead of idling for a fixed grace period (Bug fix: the old
+	// unconditional 500ms grace forced every non-Promise eval to wait ≥500ms
+	// even with zero async activity, capping throughput at ~2 ops/s).
 	deadline := time.Now().Add(timeout)
-	grace := time.Now().Add(500 * time.Millisecond) // minimum spin for worker msgs
 	for {
 		s.timers.DrainCallbacks() // Bug 2 fix
 		s.timers.Flush(100 * time.Millisecond)
 		s.ctx.PerformMicrotaskCheckpoint()
 		pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js")
 		xhrBusy := perr == nil && pending != nil && pending.String() != "0"
-		if !xhrBusy && time.Now().After(grace) {
+		hasAsync := xhrBusy || s.timers.PendingCallbacks() > 0 || s.timers.PendingTimers() > 0
+		if !hasAsync {
 			break
 		}
 		if time.Now().After(deadline) {
