@@ -272,28 +272,14 @@ func (kb *KnowledgeBase) SampleGPU(rng *seededRNG, osName string) api.GPUProfile
 	// Prefer real apify data (773 combos) via runtime loader (JSON or embedded).
 	gpus := CurrentFpRealGPUs()
 	if len(gpus) > 0 {
-		idx := rng.Intn(len(gpus))
-		gpu := gpus[idx]
-		// Filter by OS brand hint: Windows → Direct3D, macOS → Metal, Linux → OpenGL
-		renderer := gpu.Renderer
-		vendor := gpu.Vendor
-		if osName == "macos" && !strings.Contains(renderer, "Metal") {
-			for i := 0; i < 10; i++ {
-				candidate := gpus[rng.Intn(len(gpus))]
-				if strings.Contains(candidate.Renderer, "Metal") {
-					return api.GPUProfile{Vendor: candidate.Vendor, Renderer: candidate.Renderer}
-				}
-			}
+		// Pre-filter by OS so we never sample an incompatible GPU.
+		// macOS → Metal renderer, Windows → Direct3D11, Linux → OpenGL/any-D3D.
+		filtered := filterGPUsByOS(gpus, osName)
+		if len(filtered) == 0 {
+			filtered = gpus // fallback: use full list if filter is too narrow
 		}
-		if osName == "windows" && strings.Contains(renderer, "Metal") {
-			for i := 0; i < 10; i++ {
-				candidate := gpus[rng.Intn(len(gpus))]
-				if strings.Contains(candidate.Renderer, "Direct3D11") {
-					return api.GPUProfile{Vendor: candidate.Vendor, Renderer: candidate.Renderer}
-				}
-			}
-		}
-		return api.GPUProfile{Vendor: vendor, Renderer: renderer}
+		gpu := filtered[rng.Intn(len(filtered))]
+		return api.GPUProfile{Vendor: gpu.Vendor, Renderer: gpu.Renderer}
 	}
 	// Fallback to hand-curated matrix
 	fallbackGPUs, ok := kb.GPUs[osName]
@@ -304,11 +290,50 @@ func (kb *KnowledgeBase) SampleGPU(rng *seededRNG, osName string) api.GPUProfile
 	return api.GPUProfile{Vendor: e.Vendor, Renderer: e.Renderer}
 }
 
+// filterGPUsByOS returns only GPUs whose renderer string is consistent with
+// the given OS. This prevents impossible combos like Apple Metal on Windows.
+func filterGPUsByOS(gpus []FpRealGPU, osName string) []FpRealGPU {
+	out := make([]FpRealGPU, 0, len(gpus))
+	for _, g := range gpus {
+		switch osName {
+		case "macos":
+			// macOS uses Metal; "Apple GPU" is also valid (Safari fallback).
+			if strings.Contains(g.Renderer, "Metal") || strings.Contains(g.Vendor, "Apple") {
+				out = append(out, g)
+			}
+		case "windows":
+			// Windows uses Direct3D11; exclude Metal and Apple GPU.
+			if strings.Contains(g.Renderer, "Direct3D11") &&
+				!strings.Contains(g.Renderer, "Metal") &&
+				!strings.Contains(g.Vendor, "Apple") {
+				out = append(out, g)
+			}
+		case "linux":
+			// Linux typically uses OpenGL; D3D11 entries are Windows-only.
+			// Most apify Linux entries don't have D3D/Metal in the renderer.
+			if !strings.Contains(g.Renderer, "Direct3D11") &&
+				!strings.Contains(g.Renderer, "Metal") &&
+				!strings.Contains(g.Vendor, "Apple") {
+				out = append(out, g)
+			}
+		default:
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
 func (kb *KnowledgeBase) SampleScreen(rng *seededRNG, osName string) map[string]any {
 	// Prefer real apify data (4569 configs) via runtime loader.
 	screens := CurrentFpRealScreens()
 	if len(screens) > 0 {
-		s := screens[rng.Intn(len(screens))]
+		// Pre-filter by OS: macOS screens have colorDepth 30, Windows/Linux
+		// typically 24 or 32. macOS also has distinctive resolutions.
+		filtered := filterScreensByOS(screens, osName)
+		if len(filtered) == 0 {
+			filtered = screens
+		}
+		s := filtered[rng.Intn(len(filtered))]
 		return map[string]any{
 			"width":       s.Width,
 			"height":      s.Height,
@@ -337,6 +362,35 @@ func (kb *KnowledgeBase) SampleScreen(rng *seededRNG, osName string) map[string]
 		"availLeft":   0,
 		"availTop":    0,
 	}
+}
+
+// filterScreensByOS returns only screen configs consistent with the given OS.
+// macOS: colorDepth 30 (typical for Retina), common widths 1512/1710/1470/1728.
+// Windows/Linux: colorDepth 24 or 32.
+func filterScreensByOS(screens []FpRealScreen, osName string) []FpRealScreen {
+	out := make([]FpRealScreen, 0, len(screens))
+	for _, s := range screens {
+		switch osName {
+		case "macos":
+			// macOS Retina displays: colorDepth 30, DPR 2.0, widths like 1512/1710/1470/1728/2560.
+			if s.ColorDepth == 30 || s.DevicePixelRatio == 2.0 {
+				out = append(out, s)
+			}
+		case "windows":
+			// Windows: colorDepth 24 or 32, DPR typically 1.0/1.25/1.5.
+			if s.ColorDepth == 24 || s.ColorDepth == 32 {
+				out = append(out, s)
+			}
+		case "linux":
+			// Linux: colorDepth 24 or 32, exclude macOS Retina (30).
+			if s.ColorDepth == 24 || s.ColorDepth == 32 {
+				out = append(out, s)
+			}
+		default:
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (kb *KnowledgeBase) SampleTimezone(rng *seededRNG) (string, []string) {
