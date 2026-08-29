@@ -40,7 +40,7 @@
 - [x] 事件循环模拟 + flushTimers
 - [x] **验证：沙箱内执行基本浏览器检测 JS 无报错**
 
-里程碑 M2: 沙箱可用 — 基本浏览器环境检查通过 (210/210 ✅)
+里程碑 M2: 沙箱可用 — 基本浏览器环境检查通过 (221/221 ✅)
 
 ## Phase 3: 端到端验证场景
 - [ ] 获取典型页面 JS（含环境探测逻辑）
@@ -131,7 +131,7 @@
 | 里程碑 | 内容 | 产出 |
 |-------|------|------|
 | M1 | 指纹引擎 | 自洽指纹通过检测 ✅ |
-| M2 | V8 沙箱 | 浏览器环境检查通过 (210/210 ✅) |
+| M2 | V8 沙箱 | 浏览器环境检查通过 (221/221 ✅) |
 | M3 | 端到端验证 | 典型页面 JS 行为一致 |
 | M4 | 网络层 | replay + 转发双模式 ✅ |
 | M5 | 调试层 | DevTools 可调试 ✅ |
@@ -159,3 +159,18 @@
 - [x] 死代码删除：`curl_impersonate.go`（CurlImpersonate/CurlCffiClient）、`tls_profile.go`（DefaultTLSProfiles/GetTLSProfile）、`buildChromeClientHelloSpec`、`quic.go`（假 H3）；活代码重组为 `tls_client.go` + `proxy_pool.go`
 - [x] internal/session 处置：删除与 bridge Service 重复的 Manager，ProfileStore 接线 bridge（save-profile/resume API + idle 清理移植）
 - [x] 验证：WSL CGO 编译通过 + selftest 210/210 + profile API 冒烟（快照→恢复→cookie/UA 还原全链路）
+
+## Worker + ES Module + console 修复 (2026-08-29)
+
+- [x] Web Worker 真实执行：独立 Isolate + inbound/outbound channel 双泵（`worker.go` StartWorker + startParentPump，约束 11 线程模型）
+- [x] ES Module：`importModule()` polyfill，支持 `data:`/`blob:` URL，`export default` + named exports
+- [x] console.log 修复：v8go v0.34.0 ObjectTemplate 嵌套 FunctionTemplate Go callback 永不触发——改用 PostContext `GetFunction` + `global.Set`（`injectConsole`）
+- [x] Worker UA 注入 + blob URL 支持 + CLI 消息 drain grace period
+
+## WebSocket + Canvas 回放 + 联合分布 + OOM 防护 (2026-08-29)
+
+- [x] WebSocket 真实连接：纯 Go RFC 6455 实现（握手 + 帧编解码 + mask），`wsBridge` 线程模型参照 Worker（read/write goroutine + `scheduleTimer` 回 Isolate 线程），JS 侧标准接口（onopen/onmessage/onclose/onerror + send/close + readyState 常量）
+- [x] Canvas 预采集回放：`canvas_dataset.go` 懒加载 `data/canvas_dataset.json`，`toDataURL()` 按指纹组合查表返回真实值，未命中降级合成；`CanvasFP.ToDataURL` 字段
+- [x] 指纹采样联合分布：`filterGPUsByOS` + `filterScreensByOS` 预过滤（macOS→Metal/Retina，Windows→Direct3D11/24-32bit，Linux→no D3D/Metal），100 次采样合理性断言
+- [x] V8 堆内存上限：`WithResourceConstraints(8MB initial, 512MB max)`，`BES_POOL_MEM_MB` 可配置；OOM 脚本优雅终止（ExecutionTerminated）而非进程崩溃
+- [x] 验证：WSL CGO 编译通过 + selftest 221/221

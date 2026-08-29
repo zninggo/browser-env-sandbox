@@ -259,15 +259,15 @@ bes 的 V8 Isolate 池化 + 零进程开销是核心卖点。引入真浏览器�
 
 | 功能 | bes 实现 | 真实浏览器 | 能补吗 |
 |------|---------|-----------|--------|
-| WebSocket | 空壳，`send()` 空函数，永不触发 onopen | 真实 TCP+TLS+WS 帧 | ⚡ 可接 Go WebSocket |
+| WebSocket | ✅ 真实 TCP+TLS+WS 帧（RFC 6455 纯 Go，wsBridge 线程模型参照 Worker） | 真实 TCP+TLS+WS 帧 | ✅ 已完成 |
 | WebRTC SDP | `createOffer()` 返回空 SDP | SDP 含真实 ICE candidate/IP | ⚡ 可生成假 SDP |
-| Worker | `postMessage` 空函数，不执行 JS | 独立 V8 Isolate + 线程 | ⚡ 可用子 Isolate 实现 |
+| Worker | ✅ 独立 V8 Isolate + inbound/outbound channel 双泵 | 独立 V8 Isolate + 线程 | ✅ 已完成 |
 | Service Worker | 对象存在不运行 | 注册/运行 SW 脚本 | ⚡ 可模拟 |
 | indexedDB | `open()` 永远触发 onerror | 真实 IndexedDB 存储 | ⚡ 可用 Go KV 实现 |
 | 事件循环 | Go timers + FlushTimers 手动触发 | 原生 task/microtask queue 优先级 | ⚡ 可调优 |
 | iframe 隔离 | `Object.create(window)` 半假 | 独立浏览上下文 | ⚡ 可改 |
 | DOM 完整性 | `querySelector` 只处理 head/body/html | 完整 CSS 选择器引擎 | ⚡ 可逐步补 |
-| ES Module | `import()` 报 SyntaxError | 原生支持 | ⚡ 需 Module 模式 |
+| ES Module | ✅ `importModule()` polyfill（data:/blob: URL，export default + named exports） | 原生支持 | ✅ 已完成 |
 | HTTP/3 (QUIC) | 空壳 `CheckAvailable()=false` | 真实 QUIC 传输 | ⚡ 需 quic-go |
 | TLS 版本切换 | 固定 Chrome133 | 按版本切换 ClientHello | ⚡ Phase 1 修复 |
 
