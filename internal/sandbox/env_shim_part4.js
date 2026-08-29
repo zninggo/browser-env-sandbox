@@ -383,4 +383,25 @@
     return el;
   };
 
+  // ── CAPTCHA solver bridge ──
+  // Exposes window.bes.solveCaptcha as a JS-friendly wrapper over the Go
+  // __besSolveCaptcha callback. Returns a Solution object synchronously;
+  // for async use, wrap in Promise.
+  if (typeof __besSolveCaptcha !== 'undefined') {
+    if (typeof window.bes !== 'object') {
+      window.bes = {};
+    }
+    window.bes.solveCaptcha = function(type, siteKey, pageURL, options) {
+      var opts = options || {};
+      var resultJSON = __besSolveCaptcha(type, siteKey, pageURL, JSON.stringify(opts));
+      try { return JSON.parse(resultJSON); } catch(e) { return {solved: false, reason: String(e)}; }
+    };
+    // Convenience: async wrapper returning a Promise
+    window.bes.solveCaptchaAsync = function(type, siteKey, pageURL, options) {
+      return new Promise(function(resolve) {
+        resolve(window.bes.solveCaptcha(type, siteKey, pageURL, options));
+      });
+    };
+  }
+
 })();

@@ -24,6 +24,11 @@ jobs:
           CGO_ENABLED=1 go build -o bes ./cmd/bes
           CGO_ENABLED=1 go build -o bes-server ./cmd/bes-server
           CGO_ENABLED=1 go build -o bes-selftest ./cmd/bes-selftest
+          CGO_ENABLED=1 go build -o bes-bench ./cmd/bes-bench
 
-      - name: Self-test (133 browser environment checks)
+      - name: Self-test (155 browser environment checks)
         run: ./bes-selftest
+
+      - name: Performance benchmark (compare against baseline)
+        run: ./bes-bench --compare perf-baseline.json
+        continue-on-error: true

@@ -226,8 +226,11 @@ func main() {
 		// ── Async XHR mode ──
 		{"__besPendingXHR exists", `typeof __besPendingXHR`, "number"},
 		{"XMLHttpRequest.prototype.send is async", `typeof XMLHttpRequest.prototype.send`, "function"},
-		// ── Captcha solver registry ──
-		// (Go-side package; tested via bridge, not JS — skip here)
+		// ── CAPTCHA solver bridge ──
+		{"__besSolveCaptcha exists", `typeof __besSolveCaptcha`, "function"},
+		{"bes.solveCaptcha exists", `typeof bes.solveCaptcha`, "function"},
+		{"bes.solveCaptchaAsync exists", `typeof bes.solveCaptchaAsync`, "function"},
+		{"bes.solveCaptcha returns unsolved (noop)", `bes.solveCaptcha('recaptcha','test','https://example.com').solved`, "false"},
 	}
 
 	passed := 0
