@@ -44,6 +44,7 @@ type GPUProfile struct {
 // CanvasFP holds canvas fingerprint data.
 type CanvasFP struct {
 	ToDataURLHash string `json:"to_data_url_hash"`
+	ToDataURL     string `json:"to_data_url"`     // full data:image/png;base64,... (pre-collected or synthetic)
 	MeasureText   map[string]float64 `json:"measure_text"`
 }
 

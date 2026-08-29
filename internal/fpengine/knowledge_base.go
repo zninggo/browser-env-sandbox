@@ -358,12 +358,24 @@ func (kb *KnowledgeBase) SampleTimezoneNamed(name string) (string, []string, boo
 
 func (kb *KnowledgeBase) LookupCanvasHash(majorVer int, osName, gpuVendor string) api.CanvasFP {
 	key := canvasHashKey(majorVer, osName, gpuVendor)
+
+	// 1. Try pre-collected dataset (real Chrome canvas output).
+	dataURL := LookupCanvasDataset(key)
+
+	// 2. Try knowledge-base hash map (if populated).
 	hash := kb.CanvasHashes[key]
-	if hash == "" {
-		hash = syntheticCanvasDataURL(majorVer, osName, gpuVendor)
+
+	// 3. Fall back to synthetic generation for both hash and dataURL.
+	if dataURL == "" {
+		dataURL = syntheticCanvasDataURL(majorVer, osName, gpuVendor)
 	}
+	if hash == "" {
+		hash = dataURL // use the full dataURL as the hash (base64 is already a compact representation)
+	}
+
 	return api.CanvasFP{
 		ToDataURLHash: hash,
+		ToDataURL:     "data:image/png;base64," + dataURL,
 		MeasureText: map[string]float64{
 			"measureText_width": float64(majorVer) * 0.1,
 		},

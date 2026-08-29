@@ -170,6 +170,9 @@ func ValidateConsistency(fp *api.Fingerprint) error {
 	if fp.Canvas.ToDataURLHash == "" {
 		return fmt.Errorf("canvas toDataURL hash is empty")
 	}
+	if fp.Canvas.ToDataURL == "" {
+		return fmt.Errorf("canvas toDataURL is empty")
+	}
 
 	return nil
 }

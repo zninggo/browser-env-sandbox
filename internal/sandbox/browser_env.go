@@ -394,9 +394,13 @@ func (b *EnvBuilder) createElementCallback(info *v8go.FunctionCallbackInfo) *v8g
 			return inst.Value
 		}))
 		obj.Set("toDataURL", v8go.NewFunctionTemplate(b.iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
-			// Deterministic dataURL based on the fingerprint's canvas hash.
-			// This keeps toDataURL output consistent with fp.Canvas.ToDataURLHash.
-			dataURL := "data:image/png;base64," + b.fp.Canvas.ToDataURLHash
+			// Return the fingerprint's pre-collected or synthetic canvas dataURL.
+			// This keeps toDataURL output consistent with fp.Canvas.ToDataURLHash
+			// and, when a canvas dataset is loaded, returns real Chrome output.
+			dataURL := b.fp.Canvas.ToDataURL
+			if dataURL == "" {
+				dataURL = "data:image/png;base64," + b.fp.Canvas.ToDataURLHash
+			}
 			v, _ := v8go.NewValue(b.iso, dataURL)
 			return v
 		}))
