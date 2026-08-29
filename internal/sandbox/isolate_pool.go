@@ -1,10 +1,37 @@
 package sandbox
 
 import (
+	"os"
+	"strconv"
 	"sync"
 
 	"github.com/tommie/v8go"
 )
+
+// Default V8 heap limits. The initial heap is kept small for fast startup;
+// the max prevents runaway scripts from OOM-killing the process. Override
+// via BES_POOL_MEM_MB (max heap in MB; initial is always 8MB).
+const (
+	defaultInitialHeapMB = 8
+	defaultMaxHeapMB     = 512
+)
+
+// maxHeapMB returns the configured max heap size in MB.
+func maxHeapMB() uint64 {
+	if v := os.Getenv("BES_POOL_MEM_MB"); v != "" {
+		if mb, err := strconv.ParseUint(v, 10, 64); err == nil && mb > 0 {
+			return mb
+		}
+	}
+	return defaultMaxHeapMB
+}
+
+// newIsolateWithLimits creates a V8 Isolate with resource constraints.
+func newIsolateWithLimits() *v8go.Isolate {
+	initial := uint64(defaultInitialHeapMB) * 1024 * 1024
+	max := maxHeapMB() * 1024 * 1024
+	return v8go.NewIsolate(v8go.WithResourceConstraints(initial, max))
+}
 
 // IsolatePool manages a pool of V8 Isolates for reuse.
 // Creating a new Isolate is expensive; pooling dramatically improves
@@ -30,7 +57,7 @@ func (p *IsolatePool) Get() *v8go.Isolate {
 	case iso := <-p.pool:
 		return iso
 	default:
-		return v8go.NewIsolate()
+		return newIsolateWithLimits()
 	}
 }
 

@@ -107,7 +107,7 @@ type Worker struct {
 // session fingerprint's UA so worker-side navigator.userAgent matches the
 // parent.
 func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink, userAgent string) (*Worker, error) {
-	iso := v8go.NewIsolate()
+	iso := newIsolateWithLimits()
 	ctx := v8go.NewContext(iso)
 	w := &Worker{
 		iso:        iso,
