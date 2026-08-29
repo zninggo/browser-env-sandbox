@@ -218,6 +218,25 @@ func (tm *TimerManager) cancel(id int32) {
 	}
 }
 
+// PendingCallbacks returns the number of queued callbacks waiting to be
+// drained on the Isolate thread. Worker→parent replies and fired timer
+// callbacks both land here via scheduleTimer(0). EvalAwait uses this to decide
+// whether any async activity still needs draining.
+func (tm *TimerManager) PendingCallbacks() int {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return len(tm.callbackQueue)
+}
+
+// PendingTimers returns the number of registered (not yet fired/cancelled)
+// timers. EvalAwait uses this together with PendingCallbacks to detect whether
+// any async work is outstanding before spinning.
+func (tm *TimerManager) PendingTimers() int {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return len(tm.timers)
+}
+
 // Flush waits for all pending timers to complete, up to the given timeout.
 func (tm *TimerManager) Flush(timeout time.Duration) error {
 	deadline := time.After(timeout)
