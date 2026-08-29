@@ -326,6 +326,8 @@ func (s *Session) SwapFingerprint(eng *Engine, opts api.SessionOptions) (*api.Fi
 	}
 
 	// Build a JS snippet that overwrites all fingerprint-derived globals.
+	// Uses __besSafeDefine (defined in the IIFE below) to gracefully handle
+	// non-configurable properties left over from the initial template injection.
 	// navigator (primitives)
 	navLines := []string{}
 	for k, v := range fp.Navigator {
@@ -334,13 +336,13 @@ func (s *Session) SwapFingerprint(eng *Engine, opts api.SessionOptions) (*api.Fi
 		}
 		switch val := v.(type) {
 		case string:
-			navLines = append(navLines, fmt.Sprintf("Object.defineProperty(navigator,%q,{value:%q,configurable:true,writable:true});", k, val))
+			navLines = append(navLines, fmt.Sprintf("__besSafeDefine(navigator,%q,%q);", k, val))
 		case bool:
-			navLines = append(navLines, fmt.Sprintf("Object.defineProperty(navigator,%q,{value:%t,configurable:true,writable:true});", k, val))
+			navLines = append(navLines, fmt.Sprintf("__besSafeDefine(navigator,%q,%t);", k, val))
 		case int, int32:
-			navLines = append(navLines, fmt.Sprintf("Object.defineProperty(navigator,%q,{value:%d,configurable:true,writable:true});", k, val))
+			navLines = append(navLines, fmt.Sprintf("__besSafeDefine(navigator,%q,%d);", k, val))
 		case float64:
-			navLines = append(navLines, fmt.Sprintf("Object.defineProperty(navigator,%q,{value:%v,configurable:true,writable:true});", k, val))
+			navLines = append(navLines, fmt.Sprintf("__besSafeDefine(navigator,%q,%v);", k, val))
 		}
 	}
 
@@ -349,9 +351,9 @@ func (s *Session) SwapFingerprint(eng *Engine, opts api.SessionOptions) (*api.Fi
 	for k, v := range fp.Screen {
 		switch val := v.(type) {
 		case int, int32:
-			screenLines = append(screenLines, fmt.Sprintf("Object.defineProperty(screen,%q,{value:%d,configurable:true,writable:true});", k, val))
+			screenLines = append(screenLines, fmt.Sprintf("__besSafeDefine(screen,%q,%d);", k, val))
 		case float64:
-			screenLines = append(screenLines, fmt.Sprintf("Object.defineProperty(screen,%q,{value:%v,configurable:true,writable:true});", k, val))
+			screenLines = append(screenLines, fmt.Sprintf("__besSafeDefine(screen,%q,%v);", k, val))
 		}
 	}
 
@@ -410,19 +412,29 @@ func (s *Session) SwapFingerprint(eng *Engine, opts api.SessionOptions) (*api.Fi
 
 	js := fmt.Sprintf(`
 		(function(){
+			// __besSafeDefine: try defineProperty, fall back to direct assignment
+			// when the property is non-configurable (some v8go template-set
+			// properties can't be redefined). This prevents the swap from
+			// throwing on partial failures.
+			function __besSafeDefine(obj, prop, val) {
+				try {
+					Object.defineProperty(obj, prop, {value: val, configurable: true, writable: true});
+				} catch(e) {
+					try { obj[prop] = val; } catch(e2) {}
+				}
+			}
 			%s
 			%s
 			%s
-			Object.defineProperty(navigator,'language',{value:%q,configurable:true,writable:true});
-			Object.defineProperty(navigator,'languages',{value:%s,configurable:true,writable:true});
-			Object.defineProperty(navigator,'userAgentData',{value:%s,configurable:true,writable:true});
-			Object.defineProperty(navigator,'webdriver',{value:false,configurable:false});
+			__besSafeDefine(navigator,'language',%q);
+			__besSafeDefine(navigator,'languages',%s);
+			__besSafeDefine(navigator,'userAgentData',%s);
+			try { Object.defineProperty(navigator,'webdriver',{value:false,configurable:false}); } catch(e) {}
 			// canvas toDataURL hash
 			var _origCreateElement = document.createElement;
 			document.createElement = function(tag) {
 				var el = _origCreateElement.call(document, tag);
 				if (tag === 'canvas' || (typeof tag === 'string' && tag.toLowerCase() === 'canvas')) {
-					var _origGetContext = el.getContext;
 					el.toDataURL = function() { return 'data:image/png;base64,' + %q; };
 				}
 				return el;
@@ -430,11 +442,25 @@ func (s *Session) SwapFingerprint(eng *Engine, opts api.SessionOptions) (*api.Fi
 			// WebGL params
 			var _webglParams = %s;
 			// location
-			Object.defineProperty(location,'href',{value:%q,configurable:true});
-			Object.defineProperty(document,'URL',{value:%q,configurable:true});
+			__besSafeDefine(location,'href',%q);
+			__besSafeDefine(document,'URL',%q);
+			__besSafeDefine(document,'documentURI',%q);
+			// timezone override for the new fingerprint
+			try {
+				var _tz = %q;
+				if (_tz) {
+					var _OrigDTF = Intl.DateTimeFormat;
+					Intl.DateTimeFormat = function(locale, options) {
+						options = options || {};
+						if (!options.timeZone) { options.timeZone = _tz; }
+						return new _OrigDTF(locale, options);
+					};
+					Intl.DateTimeFormat.prototype = _OrigDTF.prototype;
+				}
+			} catch(e) {}
 		})();
 	`, strings.Join(navLines, "\n"), strings.Join(screenLines, "\n"), strings.Join(windowLines, "\n"),
-		langFirst, langArr, uadJSON, canvasHash, webglParams, s.location, s.location)
+		langFirst, langArr, uadJSON, canvasHash, webglParams, s.location, s.location, s.location, fp.Timezone)
 
 	if _, err := s.ctx.RunScript(js, "fingerprint-swap.js"); err != nil {
 		return fp, fmt.Errorf("fingerprint swap injection failed: %w", err)

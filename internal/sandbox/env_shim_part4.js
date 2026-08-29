@@ -139,6 +139,41 @@
   };
 
   // ── Enhanced DOMParser (returns real DOM tree) ──
+  // Tree-scoped search helpers (avoid global _besAllElements pollution).
+  function _besFindByTagInTree(root, upperTag) {
+    var results = [];
+    function walk(node) {
+      if (!node) return;
+      if (node.tagName === upperTag) results.push(node);
+      var children = node.children || [];
+      for (var i = 0; i < children.length; i++) walk(children[i]);
+      // Also search template content fragments
+      if (node.content && node.content.children) {
+        for (var j = 0; j < node.content.children.length; j++) walk(node.content.children[j]);
+      }
+    }
+    walk(root);
+    return results;
+  }
+  function _besFindByIdInTree(root, id) {
+    function walk(node) {
+      if (!node) return null;
+      if (node.id === id) return node;
+      var children = node.children || [];
+      for (var i = 0; i < children.length; i++) {
+        var found = walk(children[i]);
+        if (found) return found;
+      }
+      if (node.content && node.content.children) {
+        for (var j = 0; j < node.content.children.length; j++) {
+          var found2 = walk(node.content.children[j]);
+          if (found2) return found2;
+        }
+      }
+      return null;
+    }
+    return walk(root);
+  }
   // A recursive-descent HTML tokenizer that builds a tree of real DOM
   // elements (created via document.createElement) with parent/child links,
   // attributes, and text nodes — queryable through the existing CSS selector
@@ -157,24 +192,45 @@
       documentElement: root,
       head: headEl || { children: [], getElementsByTagName: function() { return []; }, querySelector: function() { return null; } },
       body: bodyEl || { children: [], getElementsByTagName: function() { return []; }, querySelector: function() { return null; } },
-      getElementById: function(id) { return _besElementRegistry[id] || null; },
+      getElementById: function(id) {
+        // Search within this parsed tree only
+        return _besFindByIdInTree(root, id);
+      },
       querySelector: function(sel) { return document.querySelector(sel); },
       querySelectorAll: function(sel) { return document.querySelectorAll(sel); },
       getElementsByTagName: function(tag) {
         var upper = tag.toUpperCase();
-        return _besAllElements.filter(function(el) { return el.tagName === upper; });
+        return _besFindByTagInTree(root, upper);
       },
     };
     return doc;
   };
 
   // _besParseHTML: tokenizes HTML into a tree of DOM elements.
-  // Handles: tags (open/close/self-closing), attributes, text nodes, and
-  // void elements (br, img, input, meta, link, hr, etc.).
+  // Handles: tags (open/close/self-closing), attributes, text nodes, void
+  // elements, auto-closing of <p>/<li>/<td>/<tr>/<option> (HTML5 quirk),
+  // <template> content, and <svg>/[itex] foreign content passthrough.
   function _besParseHTML(html) {
     var root = document.createElement('html');
     var stack = [root];
     var voidTags = { BR:1, IMG:1, INPUT:1, META:1, LINK:1, HR:1, AREA:1, BASE:1, COL:1, EMBED:1, PARAM:1, SOURCE:1, TRACK:1, WBR:1 };
+    // Tags that auto-close when a sibling of the same/related type opens.
+    // HTML5 spec: <p> closes on block elements; <li> closes on next <li>;
+    // <td>/<th> close on next <td>/<th>/<tr>; <tr> closes on next <tr>.
+    var autoCloseRules = {
+      'P': ['P','DIV','UL','OL','TABLE','H1','H2','H3','H4','H5','H6','BLOCKQUOTE','PRE','SECTION','ARTICLE','HEADER','FOOTER','NAV','ASIDE','FIGURE'],
+      'LI': ['LI'],
+      'TD': ['TD','TH','TR'],
+      'TH': ['TD','TH','TR'],
+      'TR': ['TR'],
+      'OPTION': ['OPTION','OPTGROUP'],
+      'OPTGROUP': ['OPTGROUP'],
+      'DD': ['DD','DT'],
+      'DT': ['DD','DT'],
+    };
+    // Foreign content namespaces — parsed as opaque subtrees (content still
+    // tokenized but namespace flagged so querySelector knows context).
+    var foreignTags = { SVG:1, MATH:1 };
     var i = 0;
     while (i < html.length) {
       if (html[i] === '<') {
@@ -214,9 +270,27 @@
         var spIdx = tagContent.search(/\s/);
         var tagName = (spIdx >= 0 ? tagContent.substring(0, spIdx) : tagContent).toUpperCase();
         if (!tagName) { i = endTag + 1; continue; }
+
+        // Auto-close logic: check if current open tag should close for this new tag
+        var currentTop = stack[stack.length - 1];
+        if (currentTop && currentTop.tagName && autoCloseRules[currentTop.tagName]) {
+          var closers = autoCloseRules[currentTop.tagName];
+          if (closers.indexOf(tagName) >= 0) {
+            stack.pop(); // auto-close the current element
+          }
+        }
+
         // Create element
         var el = document.createElement(tagName.toLowerCase());
         el.tagName = tagName;
+        el.children = [];
+        el.childNodes = [];
+        // Flag foreign content
+        if (foreignTags[tagName]) {
+          el._besForeignNS = tagName.toLowerCase();
+        } else if (currentTop && currentTop._besForeignNS) {
+          el._besForeignNS = currentTop._besForeignNS;
+        }
         // Parse attributes: name="value" | name='value' | name
         var attrStr = spIdx >= 0 ? tagContent.substring(spIdx + 1).trim() : '';
         var attrRe = /([a-zA-Z_:][a-zA-Z0-9_:.\-]*)\s*(?:=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
@@ -233,9 +307,22 @@
           }
         }
         _besRegisterElement(el);
-        // Append to current parent
+        // <template>: store content as a documentFragment-like object
+        if (tagName === 'TEMPLATE' && !selfClosing) {
+          el.content = { children: [], childNodes: [], nodeType: 11 };
+        }
+        // Append to current parent. children = element nodes only;
+        // childNodes = all nodes (elements + text).
         var parent = stack[stack.length - 1];
-        if (parent.children) parent.children.push(el); else parent.children = [el];
+        // For <template> elements, children go into the content fragment.
+        var appendTarget = parent;
+        if (parent.tagName === 'TEMPLATE' && parent.content) {
+          appendTarget = parent.content;
+        }
+        if (!appendTarget.children) appendTarget.children = [];
+        if (!appendTarget.childNodes) appendTarget.childNodes = [];
+        appendTarget.children.push(el);
+        appendTarget.childNodes.push(el);
         el.parentNode = parent;
         el.parentElement = parent;
         // Push to stack unless void or self-closing
@@ -251,7 +338,17 @@
         if (text.trim()) {
           var parent2 = stack[stack.length - 1];
           var textNode = { nodeType: 3, textContent: text, nodeValue: text, parentNode: parent2 };
-          if (parent2.children) parent2.children.push(textNode); else parent2.children = [textNode];
+          // For <template>, append to content fragment instead of element itself
+          if (parent2.tagName === 'TEMPLATE' && parent2.content) {
+            parent2.content.children.push(textNode);
+            parent2.content.childNodes = parent2.content.childNodes || [];
+            parent2.content.childNodes.push(textNode);
+          } else {
+            // Text nodes go into childNodes only, NOT children (which is
+            // element-only per DOM spec — matches browser querySelector behavior).
+            if (!parent2.childNodes) parent2.childNodes = [];
+            parent2.childNodes.push(textNode);
+          }
         }
         i = endText;
       }

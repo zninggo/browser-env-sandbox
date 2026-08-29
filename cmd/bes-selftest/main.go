@@ -223,6 +223,13 @@ func main() {
 		{"DOMParser body has children", `(function(){var d=new DOMParser().parseFromString('<body><div id="x">hi</div><span></span></body>','text/html');return d.body.children.length})()`, "2"},
 		{"DOMParser getElementById", `(function(){var d=new DOMParser().parseFromString('<body><div id="x">hi</div></body>','text/html');return d.getElementById('x') !== null})()`, "true"},
 		{"DOMParser getElementsByTagName", `(function(){var d=new DOMParser().parseFromString('<body><div>1</div><div>2</div></body>','text/html');return d.getElementsByTagName('div').length})()`, "2"},
+		// ── HTML parser: auto-closing + template + foreign content ──
+		{"DOMParser auto-closes <p> on <div>", `(function(){var d=new DOMParser().parseFromString('<p>a<div>b</div>','text/html');var ps=d.getElementsByTagName('p');return ps.length === 1 && ps[0].children.length === 0})()`, "true"},
+		{"DOMParser auto-closes <li> on next <li>", `(function(){var d=new DOMParser().parseFromString('<ul><li>a<li>b</ul>','text/html');return d.getElementsByTagName('li').length})()`, "2"},
+		{"DOMParser auto-closes <td> on next <td>", `(function(){var d=new DOMParser().parseFromString('<table><tr><td>a<td>b</tr></table>','text/html');return d.getElementsByTagName('td').length})()`, "2"},
+		{"DOMParser <template> has content fragment", `(function(){var d=new DOMParser().parseFromString('<template><span>x</span></template>','text/html');var t=d.getElementsByTagName('template')[0];return t.content && t.content.children.length > 0})()`, "true"},
+		{"DOMParser <svg> flagged as foreign", `(function(){var d=new DOMParser().parseFromString('<svg><rect/></svg>','text/html');var s=d.getElementsByTagName('svg')[0];return s._besForeignNS === 'svg'})()`, "true"},
+		{"DOMParser nested attributes parsed", `(function(){var d=new DOMParser().parseFromString('<div id="t" class="c" data-x="y">hi</div>','text/html');var el=d.getElementById('t');return el.className === 'c' && el.tagName === 'DIV'})()`, "true"},
 		// ── Async XHR mode ──
 		{"__besPendingXHR exists", `typeof __besPendingXHR`, "number"},
 		{"XMLHttpRequest.prototype.send is async", `typeof XMLHttpRequest.prototype.send`, "function"},
