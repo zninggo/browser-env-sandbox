@@ -88,7 +88,7 @@ class Sandbox {
   async call(functionName, ...args) {
     await this._ensureSession();
     const resp = await this._post(`/api/session/${this.sessionId}/call`, {
-      function_name: functionName, args,
+      function: functionName, args,
     });
     if (resp.error) throw new Error(resp.error);
     return resp.result || '';
