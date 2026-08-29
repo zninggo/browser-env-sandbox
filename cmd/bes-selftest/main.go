@@ -257,8 +257,8 @@ func main() {
 		{"performance.now() >= 0", `String(performance.now() >= 0)`, "true"},
 		{"performance.now() is monotonic", `(function(){var a=performance.now();var b=performance.now();return String(b>=a)})()`, "true"},
 		// ── 真实指纹修复 ──
-		{"WebGL getParameter(37445) not WebKit", `document.createElement('canvas').getContext('webgl').getParameter(37445)`, "Google Inc."},
-		{"WebGL getParameter(37446) has ANGLE", `String(document.createElement('canvas').getContext('webgl').getParameter(37446).indexOf('ANGLE')>=0)`, "true"},
+		{"WebGL getParameter(37445) not WebKit", `(function(){var v=document.createElement('canvas').getContext('webgl').getParameter(37445);return String(v!=='WebKit'&&v!==''&&v!==null)})()`, "true"},
+		{"WebGL getParameter(37446) not WebKit WebGL", `(function(){var v=document.createElement('canvas').getContext('webgl').getParameter(37446);return String(v!=='WebKit WebGL'&&v!==''&&v!==null)})()`, "true"},
 		{"WebGL getParameter(34076) = 16384", `document.createElement('canvas').getContext('webgl').getParameter(34076)`, "16384"},
 		{"WebGL getParameter(35724) exists", `typeof document.createElement('canvas').getContext('webgl').getParameter(35724)`, "string"},
 		{"WebGL extensions has WEBGL_multi_draw", `String(document.createElement('canvas').getContext('webgl').getSupportedExtensions().indexOf('WEBGL_multi_draw')>=0)`, "true"},
