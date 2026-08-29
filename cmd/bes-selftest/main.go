@@ -301,6 +301,10 @@ func main() {
 		{"URL origin normalized (Bug 29)", `new URL('https://example.com/path?q=1').origin`, "https://example.com"},
 		// ── Worker real execution ──
 		{"Worker roundtrip postMessage (double)", `new Promise(function(res, rej){ var w = new Worker("self.onmessage = function(e){ self.postMessage(e.data * 2); };"); w.onmessage = function(e){ res(String(e.data)); }; w.onerror = function(e){ rej(new Error(String(e.message || e))); }; w.postMessage(21); setTimeout(function(){ rej(new Error("worker timeout")); }, 3000); })`, "42"},
+		// ── Blob-URL Worker (blob-worker): blob source must reach worker.go non-empty ──
+		{"Blob→createObjectURL stores full source (blob-worker)", `(function(){ var b = new Blob(["self.onmessage=function(e){self.postMessage(e.data*3);};"]); var u = URL.createObjectURL(b); return String(URL.__besBlobs[u].length > 0); })()`, "true"},
+		{"Blob-URL Worker executes real source (blob-worker)", `new Promise(function(res, rej){ var b = new Blob(["self.onmessage = function(e){ self.postMessage(e.data + 100); };"]); var u = URL.createObjectURL(b); var w = new Worker(u); w.onmessage = function(e){ res(String(e.data)); }; w.onerror = function(e){ rej(new Error(String(e.message || e))); }; w.postMessage(5); setTimeout(function(){ rej(new Error("blob worker timeout — source likely empty (blob-worker regression)")); }, 3000); })`, "105"},
+		{"createObjectURL stores Blob without _besBytes (blob-worker)", `(function(){ var fake = { size: 3, type: "text/plain" }; var u = URL.createObjectURL(fake); return String(URL.__besBlobs[u] !== undefined); })()`, "true"},
 		// ── Dynamic import() polyfill ──
 		{"importModule exists", `typeof importModule`, "function"},
 		{"importModule default export", `importModule("data:text/javascript;base64," + btoa("export default 42")).then(function(m){ return String(m.default); })`, "42"},
