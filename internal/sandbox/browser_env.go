@@ -10,6 +10,7 @@ import (
 
 	"github.com/tommie/v8go"
 
+	"github.com/zninggo/bes/internal/captcha"
 	"github.com/zninggo/bes/pkg/api"
 )
 
@@ -456,6 +457,9 @@ func (p *PostContextBuilder) Build() {
 	// Inject fetch + XMLHttpRequest
 	p.injectFetchXHR()
 
+	// Inject CAPTCHA solver bridge: __besSolveCaptcha
+	p.injectCaptchaSolver()
+
 	// Inject comprehensive env shim (missing browser APIs)
 	// Each part runs independently so a parse error in one part doesn't
 	// block the others — all 5 parts are self-contained IIFEs.
@@ -711,6 +715,62 @@ func (p *PostContextBuilder) injectPermissions() {
 		})();
 	`
 	p.ctx.RunScript(js, "permissions.js")
+}
+
+// injectCaptchaSolver injects __besSolveCaptcha(type, siteKey, pageURL, optionsJSON)
+// as a Go callback that dispatches to the captcha package's registered solver.
+// JS callers can solve CAPTCHA challenges directly from sandbox code.
+//
+// The callback runs synchronously (blocking the V8 thread while the solver
+// works — typical 2captcha round-trip is 10-30s). For non-blocking use,
+// callers wrap it in: new Promise(function(r){ r(__besSolveCaptcha(...)) }).
+func (p *PostContextBuilder) injectCaptchaSolver() {
+	iso := p.iso
+	cb := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		args := info.Args()
+		if len(args) < 3 {
+			result, _ := json.Marshal(map[string]any{"solved": false, "reason": "__besSolveCaptcha requires (type, siteKey, pageURL)"})
+			v, _ := v8go.NewValue(iso, string(result))
+			return v
+		}
+		captchaType := args[0].String()
+		siteKey := args[1].String()
+		pageURL := args[2].String()
+		action := ""
+		minScore := 0.0
+		imageB64 := ""
+		if len(args) > 3 {
+			optsJSON := args[3].String()
+			var opts map[string]any
+			if json.Unmarshal([]byte(optsJSON), &opts) == nil {
+				if v, ok := opts["action"].(string); ok {
+					action = v
+				}
+				if v, ok := opts["min_score"].(float64); ok {
+					minScore = v
+				}
+				if v, ok := opts["image_b64"].(string); ok {
+					imageB64 = v
+				}
+			}
+		}
+
+		challenge := captcha.Challenge{
+			Type:    captcha.CaptchaType(captchaType),
+			SiteKey: siteKey,
+			PageURL: pageURL,
+			Action:  action,
+			MinScore: minScore,
+			ImageB64: imageB64,
+		}
+		sol, _ := captcha.Solve(challenge)
+		result, _ := json.Marshal(sol)
+		v, _ := v8go.NewValue(iso, string(result))
+		return v
+	}
+	fn := v8go.NewFunctionTemplate(iso, cb)
+	fnVal := fn.GetFunction(p.ctx)
+	p.global.Set("__besSolveCaptcha", fnVal)
 }
 
 // injectFetchXHR adds fetch and XMLHttpRequest to the sandbox.

@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/zninggo/bes/internal/captcha"
 	"github.com/zninggo/bes/pkg/api"
 )
 
@@ -51,6 +52,7 @@ func NewServer(addr string, svc *Service, authToken string) *Server {
 	mux.HandleFunc("POST /api/session/{id}/call", s.auth(s.callFunction))
 	mux.HandleFunc("GET /api/session/{id}/fingerprint", s.auth(s.fingerprint))
 	mux.HandleFunc("POST /api/session/{id}/swap-fingerprint", s.auth(s.swapFingerprint))
+	mux.HandleFunc("POST /api/session/{id}/solve-captcha", s.auth(s.solveCaptcha))
 	mux.HandleFunc("GET /api/session/{id}/cookies", s.auth(s.getCookies))
 	mux.HandleFunc("POST /api/session/{id}/cookies", s.auth(s.setCookie))
 	mux.HandleFunc("DELETE /api/session/{id}", s.auth(s.closeSession))
@@ -322,6 +324,36 @@ func (s *Server) swapFingerprint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, createSessionResponse{SessionID: id, Fingerprint: fp})
+}
+
+type solveCaptchaRequest struct {
+	Type     string  `json:"type"`
+	SiteKey  string  `json:"site_key"`
+	PageURL  string  `json:"page_url"`
+	Action   string  `json:"action,omitempty"`
+	MinScore float64 `json:"min_score,omitempty"`
+	ImageB64 string  `json:"image_b64,omitempty"`
+}
+
+func (s *Server) solveCaptcha(w http.ResponseWriter, r *http.Request) {
+	var req solveCaptchaRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	sol, err := captcha.Solve(captcha.Challenge{
+		Type:     captcha.CaptchaType(req.Type),
+		SiteKey:  req.SiteKey,
+		PageURL:  req.PageURL,
+		Action:   req.Action,
+		MinScore: req.MinScore,
+		ImageB64: req.ImageB64,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"solved": false, "reason": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, sol)
 }
 
 func (s *Server) getCookies(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "pooled-isolate",
+    "iterations": 100,
+    "total_ms": 682,
+    "avg_us": 6826,
+    "p50_us": 6751,
+    "p99_us": 8085,
+    "ops_per_sec": 146.6275659824047,
+    "mem_alloc_mb": 2.917936
+  },
+  {
+    "name": "fresh-isolate",
+    "iterations": 100,
+    "total_ms": 728,
+    "avg_us": 7284,
+    "p50_us": 7045,
+    "p99_us": 10541,
+    "ops_per_sec": 137.36263736263737,
+    "mem_alloc_mb": 2.93132
+  },
+  {
+    "name": "eval-only-warm",
+    "iterations": 500,
+    "total_ms": 2,
+    "avg_us": 4,
+    "p50_us": 4,
+    "p99_us": 18,
+    "ops_per_sec": 250000,
+    "mem_alloc_mb": 0.196512
+  }
+]
