@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/tommie/v8go"
+	"github.com/zninggo/v8go"
 )
 
 // Default V8 heap limits. The initial heap is kept small for fast startup;

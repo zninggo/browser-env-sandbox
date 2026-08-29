@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tommie/v8go"
+	"github.com/zninggo/v8go"
 
 	"github.com/zninggo/bes/pkg/api"
 )
@@ -85,8 +85,29 @@ type Session struct {
 	websockets  *wsRegistry
 	disposed    bool
 	mu          sync.Mutex
-	pool        *IsolatePool // Bug 1 fix: return Isolate on Dispose
+	execWG      sync.WaitGroup // tracks in-flight EvalWithTimeout goroutines so Dispose can wait them out
+	pool        *IsolatePool   // Bug 1 fix: return Isolate on Dispose
 }
+
+// Disposal / concurrency constants for EvalWithTimeout + Dispose.
+//
+// EvalWithTimeout runs RunScript on an unlocked goroutine (so Dispose can take
+// s.mu and set disposed without deadlocking against a blocked script). Two
+// bounded waits prevent unbounded hangs when a native callback cannot be
+// interrupted by TerminateExecution:
+//   - evalForceQuitTimeout bounds how long EvalWithTimeout waits for the
+//     goroutine to exit after requesting termination.
+//   - disposeExecWaitTimeout bounds how long Dispose waits for in-flight
+//     goroutines before force-closing the context.
+const (
+	evalForceQuitTimeout   = 2 * time.Second
+	disposeExecWaitTimeout = 5 * time.Second
+)
+
+// errDisposed is returned by V8 entry points when the session has already been
+// disposed (or is being disposed). Dispose sets s.disposed under s.mu before
+// tearing down, so a non-nil result means the context is gone or going.
+var errDisposed = fmt.Errorf("sandbox: session already disposed")
 
 // NetHandler handles network requests from within the sandbox.
 type NetHandler interface {
@@ -216,6 +237,9 @@ func (s *Session) Eval(code string) (string, error) {
 func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.disposed {
+		return "", errDisposed
+	}
 
 	val, err := s.ctx.RunScript(code, "sandbox-eval.js")
 	if err != nil {
@@ -290,11 +314,21 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 func (s *Session) EvalRaw(code string) (*v8go.Value, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.disposed {
+		return nil, errDisposed
+	}
 	return s.ctx.RunScript(code, "sandbox-eval.js")
 }
 
 // LoadScript loads and executes a script file (by content).
+// Bug 14 fix: acquire s.mu + check disposed to prevent concurrent V8 access
+// and use-after-dispose (Dispose closes s.ctx under s.mu).
 func (s *Session) LoadScript(name, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.disposed {
+		return errDisposed
+	}
 	_, err := s.ctx.RunScript(content, name)
 	return err
 }
@@ -319,7 +353,15 @@ func (s *Session) FlushTimers(timeout time.Duration) error {
 }
 
 // PerformMicrotasks runs pending microtasks (Promise callbacks).
+// Bug 14 fix: acquire s.mu + check disposed. The signature stays func() with
+// no return value (callers cmd/bes, bes-selftest ignore it), so a disposed
+// session silently returns instead of touching the closed context.
 func (s *Session) PerformMicrotasks() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.disposed {
+		return
+	}
 	s.ctx.PerformMicrotaskCheckpoint()
 }
 
@@ -549,15 +591,48 @@ func (s *Session) ConsoleSink() ConsoleSink {
 }
 
 // Dispose releases all resources.
+//
+// Concurrency model (P0 fix for EvalWithTimeout/Dispose deadlock +
+// use-after-dispose): the previous implementation held s.mu for the whole
+// teardown, including s.ctx.Close(). Because EvalWithTimeout also held s.mu
+// while blocked inside RunScript, Dispose could deadlock waiting for the lock —
+// and if it did get the lock, an in-flight RunScript goroutine could still be
+// touching s.ctx when Close freed it (use-after-dispose).
+//
+// The new model:
+//  1. Take s.mu only long enough to flip s.disposed (idempotent), then release.
+//     EvalWithTimeout no longer holds s.mu during RunScript, so this never
+//     deadlocks; once disposed is set, new EvalWithTimeout/RunPrecompiled
+//     calls refuse early.
+//  2. TerminateExecution to break any in-flight pure-JS loop. This does not
+//     take the V8 Locker and is safe to call while the execution goroutine
+//     holds it.
+//  3. Tear down workers/websockets/timers. These touch their own isolates /
+//     network conns, not the parent context; StopAll also blocks queued
+//     worker→parent callbacks from re-entering the parent V8.
+//  4. Wait for in-flight EvalWithTimeout goroutines (s.execWG) to exit before
+//     Close, bounded by disposeExecWaitTimeout so a native callback that
+//     TerminateExecution cannot interrupt does not hang Dispose. On the normal
+//     path (JS termination) the goroutine exits promptly and Close is safe —
+//     no use-after-dispose.
+//  5. Close the context and return the Isolate to the pool.
+//
 // Bug 1 fix: return Isolate to pool.
-// Bug 14 fix: acquire s.mu to prevent concurrent V8 access during disposal.
+// Bug 14 fix: prevent concurrent V8 access during disposal.
 func (s *Session) Dispose() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.disposed {
+		s.mu.Unlock()
 		return
 	}
 	s.disposed = true
+	s.mu.Unlock()
+
+	// 1. Request any in-flight V8 execution to terminate. Safe to call from
+	//    this goroutine: it does not acquire the V8 Locker.
+	s.iso.TerminateExecution()
+
+	// 2. Tear down sub-resources. These do not touch the parent context.
 	if s.workers != nil {
 		s.workers.disposeAll()
 	}
@@ -565,9 +640,41 @@ func (s *Session) Dispose() {
 		s.websockets.disposeAll()
 	}
 	s.timers.StopAll()
-	s.ctx.Close()
-	// Bug 1 fix: return Isolate to pool for reuse (prevents leak)
-	if s.pool != nil {
+
+	// 3. Wait for in-flight EvalWithTimeout goroutines to exit so that Close
+	//    cannot race a RunScript still using s.ctx (use-after-dispose). Bounded
+	//    so a blocked native callback cannot hang Dispose.
+	done := make(chan struct{})
+	go func() {
+		s.execWG.Wait()
+		close(done)
+	}()
+	timedOut := false
+	select {
+	case <-done:
+	case <-time.After(disposeExecWaitTimeout):
+		// A goroutine is still inside RunScript (stuck in a native callback
+		// that TerminateExecution cannot interrupt). Calling Close now would
+		// free the context out from under it (use-after-free), so we skip both
+		// Close and returning the Isolate to the pool: the session is already
+		// unusable, and leaking one Isolate is preferable to crashing the
+		// process. The goroutine will eventually exit and release the V8
+		// Locker, by which point s.ctx is simply never touched again.
+		timedOut = true
+		log.Printf("[sandbox] session %s dispose: execution goroutine did not exit within %v, skipping context close to avoid use-after-dispose (possible blocked native callback)", s.ID, disposeExecWaitTimeout)
+	}
+
+	// 4. No in-flight execution remains on the normal path; safe to Close.
+	if !timedOut {
+		s.mu.Lock()
+		s.ctx.Close()
+		s.mu.Unlock()
+	}
+
+	// Bug 1 fix: return Isolate to pool for reuse (prevents leak). Skipped when
+	// an execution goroutine is still using the Isolate (timedOut), since
+	// returning it to the pool would let another session reuse it concurrently.
+	if !timedOut && s.pool != nil {
 		s.pool.Put(s.iso)
 	}
 	log.Printf("[sandbox] session %s disposed", s.ID)

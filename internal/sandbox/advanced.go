@@ -5,17 +5,36 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tommie/v8go"
+	"github.com/zninggo/v8go"
 )
 
 // EvalWithTimeout executes JavaScript with a timeout.
 // If the script runs longer than the timeout, the V8 Isolate's execution
 // is terminated, preventing infinite loops from hanging the session.
 //
-// This uses v8go.Isolate.TerminateExecution() in a goroutine.
+// Concurrency model (P0 fix for EvalWithTimeout/Dispose deadlock +
+// use-after-dispose): RunScript runs on a goroutine that does NOT hold s.mu.
+// s.mu is acquired only briefly to check disposed and register the in-flight
+// execution (s.execWG). This lets Dispose acquire s.mu, set disposed, and
+// request termination without deadlocking against a blocked script — which the
+// previous "lock-then-block-on-RunScript" design could not do.
+//
+// V8 serialization is preserved by v8go's C++ v8::Locker (one Isolate, one
+// executing thread at a time): if EvalAwait/EvalRaw run concurrently they block
+// on the Locker until this goroutine's RunScript returns. Native callbacks
+// inside the script may re-enter s.mu because it is not held here.
+//
+// TerminateExecution interrupts pure-JS loops (verified by v8go's own tests)
+// but cannot interrupt a native callback blocked in Go. The force-quit wait
+// caps that worst case so neither the caller nor s.mu hangs indefinitely.
 func (s *Session) EvalWithTimeout(code string, timeout time.Duration) (string, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.disposed {
+		s.mu.Unlock()
+		return "", errDisposed
+	}
+	s.execWG.Add(1) // track in-flight execution so Dispose can wait it out
+	s.mu.Unlock()
 
 	type result struct {
 		val string
@@ -24,6 +43,16 @@ func (s *Session) EvalWithTimeout(code string, timeout time.Duration) (string, e
 	resultCh := make(chan result, 1)
 
 	go func() {
+		defer s.execWG.Done()
+		// recover guards against a cgo panic propagating from a V8 crash
+		// inside RunScript: without it, an unrecovered goroutine panic
+		// terminates the whole process. Convert it to an error result so the
+		// caller sees a failure and s.execWG still drains via the defer above.
+		defer func() {
+			if r := recover(); r != nil {
+				resultCh <- result{"", fmt.Errorf("sandbox: v8 panic during RunScript: %v", r)}
+			}
+		}()
 		val, err := s.ctx.RunScript(code, "sandbox-eval-timeout.js")
 		if err != nil {
 			if jsErr, ok := err.(*v8go.JSError); ok {
@@ -47,14 +76,24 @@ func (s *Session) EvalWithTimeout(code string, timeout time.Duration) (string, e
 	case r := <-resultCh:
 		return r.val, r.err
 	case <-ctx.Done():
-		// Terminate V8 execution
+		// Request V8 to terminate. TerminateExecution does not take the V8
+		// Locker, so it is safe to call from this goroutine while the
+		// execution goroutine holds the Locker inside RunScript.
 		s.iso.TerminateExecution()
-		// Wait for the goroutine to finish (it will get a termination error)
-		r := <-resultCh
-		if r.err != nil {
-			return "", fmt.Errorf("execution terminated after %v: %w", timeout, r.err)
+		// Wait for the goroutine to finish. Under normal JS termination it
+		// returns promptly with a termination error. If it is stuck inside a
+		// native callback that TerminateExecution cannot interrupt, bail out
+		// after evalForceQuitTimeout instead of blocking forever — s.mu is not
+		// held here, so this never leaks the lock.
+		select {
+		case r := <-resultCh:
+			if r.err != nil {
+				return "", fmt.Errorf("execution terminated after %v: %w", timeout, r.err)
+			}
+			return "", fmt.Errorf("execution terminated after %v", timeout)
+		case <-time.After(evalForceQuitTimeout):
+			return "", fmt.Errorf("execution terminated after %v (script did not exit within %v; possible blocked native callback)", timeout, evalForceQuitTimeout)
 		}
-		return "", fmt.Errorf("execution terminated after %v", timeout)
 	}
 }
 
@@ -85,6 +124,9 @@ func CompileScript(iso *v8go.Isolate, source, name string) (*PrecompiledScript, 
 func (s *Session) RunPrecompiled(ps *PrecompiledScript) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.disposed {
+		return "", errDisposed
+	}
 	val, err := ps.unbound.Run(s.ctx)
 	if err != nil {
 		return "", err
