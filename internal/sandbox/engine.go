@@ -7,6 +7,7 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -234,85 +235,151 @@ func (s *Session) Eval(code string) (string, error) {
 // EvalAwait executes JavaScript; a Promise result is awaited by draining
 // the timer loop + microtask checkpoints until it settles or the timeout
 // elapses. Non-Promise results return immediately.
+//
+// Concurrency model (mirrors EvalWithTimeout): RunScript and the Promise/
+// drain loops run on a goroutine that does NOT hold s.mu. s.mu is acquired
+// only briefly to check disposed and register the in-flight execution
+// (s.execWG), so Dispose can take s.mu, set disposed, and request termination
+// without deadlocking against a blocked script — the old "lock-then-block" path
+// (which held s.mu across the whole RunScript + drain) deadlocked with Dispose.
+// V8 serialization is preserved by v8go's C++ v8::Locker (one Isolate, one
+// executing thread at a time). The grace logic (return immediately when no
+// async work is pending) is unchanged.
 func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.disposed {
+		s.mu.Unlock()
 		return "", errDisposed
 	}
+	s.execWG.Add(1) // track in-flight execution so Dispose can wait it out
+	s.mu.Unlock()
 
-	val, err := s.ctx.RunScript(code, "sandbox-eval.js")
-	if err != nil {
-		if jsErr, ok := err.(*v8go.JSError); ok {
-			return "", fmt.Errorf("JS error: %s\n%s", jsErr.Message, jsErr.StackTrace)
-		}
-		return "", err
+	type result struct {
+		val string
+		err error
 	}
-	if val == nil {
-		return "", nil
-	}
+	resultCh := make(chan result, 1)
 
-	// Await Promise results: poll pending timers + microtask checkpoint so
-	// setTimeout-driven resolution actually runs, up to the timeout.
-	if val.IsPromise() {
-		p, err := val.AsPromise()
+	go func() {
+		defer s.execWG.Done()
+		// recover guards against a cgo panic propagating from a V8 crash:
+		// without it, an unrecovered goroutine panic terminates the whole
+		// process. Convert it to an error result so the caller sees a failure
+		// and s.execWG still drains via the defer above.
+		defer func() {
+			if r := recover(); r != nil {
+				resultCh <- result{"", fmt.Errorf("sandbox: v8 panic during RunScript: %v", r)}
+			}
+		}()
+
+		val, err := s.ctx.RunScript(code, "sandbox-eval.js")
 		if err != nil {
-			return "", err
+			if jsErr, ok := err.(*v8go.JSError); ok {
+				resultCh <- result{"", fmt.Errorf("JS error: %s\n%s", jsErr.Message, jsErr.StackTrace)}
+				return
+			}
+			resultCh <- result{"", err}
+			return
 		}
+		if val == nil {
+			resultCh <- result{"", nil}
+			return
+		}
+
+		// Await Promise results: poll pending timers + microtask checkpoint so
+		// setTimeout-driven resolution actually runs, up to the timeout.
+		if val.IsPromise() {
+			p, err := val.AsPromise()
+			if err != nil {
+				resultCh <- result{"", err}
+				return
+			}
+			deadline := time.Now().Add(timeout)
+			for {
+				s.timers.DrainCallbacks() // Bug 2 fix: execute queued callbacks on Isolate thread
+				s.timers.Flush(100 * time.Millisecond)
+				s.ctx.PerformMicrotaskCheckpoint()
+				switch p.State() {
+				case v8go.Fulfilled:
+					if pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js"); perr == nil && pending != nil {
+						if pending.String() != "0" {
+							// Bug 13 fix: check deadline before continuing
+							if time.Now().After(deadline) {
+								resultCh <- result{"", fmt.Errorf("promise fulfilled but %s XHR still pending past %v timeout", pending.String(), timeout)}
+								return
+							}
+							continue
+						}
+					}
+					resultCh <- result{p.Result().String(), nil}
+					return
+				case v8go.Rejected:
+					resultCh <- result{"", fmt.Errorf("promise rejected: %s", p.Result().String())}
+					return
+				}
+				if time.Now().After(deadline) {
+					resultCh <- result{"", fmt.Errorf("promise pending past %v timeout", timeout)}
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		// Non-Promise: drain pending async XHR/fetch + worker messages so
+		// fire-and-forget calls settle before the eval returns. Worker replies
+		// arrive via scheduleTimer(0) into callbackQueue; DrainCallbacks executes
+		// them on this (isolate) thread.
+		//
+		// Only spin while there is actual async work outstanding — a pending XHR,
+		// a queued callback (worker reply / fired timer), or a registered timer.
+		// When none of those are pending there is nothing left to drain, so return
+		// immediately instead of idling for a fixed grace period (Bug fix: the old
+		// unconditional 500ms grace forced every non-Promise eval to wait ≥500ms
+		// even with zero async activity, capping throughput at ~2 ops/s).
 		deadline := time.Now().Add(timeout)
 		for {
-			s.timers.DrainCallbacks() // Bug 2 fix: execute queued callbacks on Isolate thread
+			s.timers.DrainCallbacks() // Bug 2 fix
 			s.timers.Flush(100 * time.Millisecond)
 			s.ctx.PerformMicrotaskCheckpoint()
-			switch p.State() {
-			case v8go.Fulfilled:
-				if pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js"); perr == nil && pending != nil {
-					if pending.String() != "0" {
-						// Bug 13 fix: check deadline before continuing
-						if time.Now().After(deadline) {
-							return "", fmt.Errorf("promise fulfilled but %s XHR still pending past %v timeout", pending.String(), timeout)
-						}
-						continue
-					}
-				}
-				return p.Result().String(), nil
-			case v8go.Rejected:
-				return "", fmt.Errorf("promise rejected: %s", p.Result().String())
+			pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js")
+			xhrBusy := perr == nil && pending != nil && pending.String() != "0"
+			hasAsync := xhrBusy || s.timers.PendingCallbacks() > 0 || s.timers.PendingTimers() > 0
+			if !hasAsync {
+				break
 			}
 			if time.Now().After(deadline) {
-				return "", fmt.Errorf("promise pending past %v timeout", timeout)
+				break
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
-	}
-	// Non-Promise: drain pending async XHR/fetch + worker messages so
-	// fire-and-forget calls settle before the eval returns. Worker replies
-	// arrive via scheduleTimer(0) into callbackQueue; DrainCallbacks executes
-	// them on this (isolate) thread.
-	//
-	// Only spin while there is actual async work outstanding — a pending XHR,
-	// a queued callback (worker reply / fired timer), or a registered timer.
-	// When none of those are pending there is nothing left to drain, so return
-	// immediately instead of idling for a fixed grace period (Bug fix: the old
-	// unconditional 500ms grace forced every non-Promise eval to wait ≥500ms
-	// even with zero async activity, capping throughput at ~2 ops/s).
-	deadline := time.Now().Add(timeout)
-	for {
-		s.timers.DrainCallbacks() // Bug 2 fix
-		s.timers.Flush(100 * time.Millisecond)
-		s.ctx.PerformMicrotaskCheckpoint()
-		pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js")
-		xhrBusy := perr == nil && pending != nil && pending.String() != "0"
-		hasAsync := xhrBusy || s.timers.PendingCallbacks() > 0 || s.timers.PendingTimers() > 0
-		if !hasAsync {
-			break
+		resultCh <- result{val.String(), nil}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	select {
+	case r := <-resultCh:
+		return r.val, r.err
+	case <-ctx.Done():
+		// Request V8 to terminate. TerminateExecution does not take the V8
+		// Locker, so it is safe to call from this goroutine while the execution
+		// goroutine holds the Locker inside RunScript.
+		s.iso.TerminateExecution()
+		// Wait for the goroutine to finish. Under normal JS termination it
+		// returns promptly with a termination error. If it is stuck inside a
+		// native callback that TerminateExecution cannot interrupt, bail out
+		// after evalForceQuitTimeout instead of blocking forever — s.mu is not
+		// held here, so this never leaks the lock.
+		select {
+		case r := <-resultCh:
+			if r.err != nil {
+				return "", fmt.Errorf("execution terminated after %v: %w", timeout, r.err)
+			}
+			return "", fmt.Errorf("execution terminated after %v", timeout)
+		case <-time.After(evalForceQuitTimeout):
+			return "", fmt.Errorf("execution terminated after %v (script did not exit within %v; possible blocked native callback)", timeout, evalForceQuitTimeout)
 		}
-		if time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
-	return val.String(), nil
 }
 
 // EvalRaw executes JavaScript and returns the raw v8go Value.
