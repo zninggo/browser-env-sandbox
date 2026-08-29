@@ -30,6 +30,16 @@ class BESError(Exception):
     pass
 
 
+def _normalize_base_url(server_addr: str) -> str:
+    """Keep backward compatibility: a bare host:port stays http://, while an
+    address that already carries an http:// or https:// scheme is used verbatim
+    so HTTPS endpoints can be reached.
+    """
+    if server_addr.startswith("http://") or server_addr.startswith("https://"):
+        return server_addr
+    return f"http://{server_addr}"
+
+
 class Sandbox:
     """A browser environment sandbox session."""
 
@@ -49,7 +59,10 @@ class Sandbox:
         Create a sandbox session.
 
         Args:
-            server_addr: bes-server address (host:port)
+            server_addr: bes-server address. A bare "host:port" resolves to
+                http:// (the historical default for local bes-server); pass an
+                "http://" or "https://" prefixed address to reach a TLS fronted
+                instance.
             browser: Browser type ("chrome", "firefox", "safari")
             os: Operating system ("windows", "macos", "linux", "android")
             seed: Fingerprint seed (0 = random)
@@ -60,7 +73,7 @@ class Sandbox:
             recording: Path to recording file for replay mode
         """
         self.server_addr = server_addr
-        self.base_url = f"http://{server_addr}"
+        self.base_url = _normalize_base_url(server_addr)
         self.session_id: Optional[str] = None
         self._create_session(
             browser=browser, os=os, seed=seed, location=location,

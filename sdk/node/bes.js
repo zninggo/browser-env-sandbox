@@ -9,6 +9,19 @@
 //   const sandbox = new Sandbox();
 //   await sandbox.ready;
 //   await sandbox.eval('navigator.userAgent');
+//
+// 连接 HTTPS 服务器:传入带 scheme 的地址即可
+//   const sandbox = await Sandbox.create({ serverAddr: 'https://bes.example.com' });
+
+// normalizeBaseURL keeps backward compatibility: a bare host:port stays http://,
+// while an address that already carries an http:// or https:// scheme is used
+// verbatim so HTTPS endpoints can be reached.
+function normalizeBaseURL(serverAddr) {
+  if (serverAddr.startsWith('http://') || serverAddr.startsWith('https://')) {
+    return serverAddr;
+  }
+  return `http://${serverAddr}`;
+}
 
 class Sandbox {
   // Async factory: resolves once the session is created and usable.
@@ -20,7 +33,7 @@ class Sandbox {
   }
 
   constructor(serverAddr = 'localhost:19821', opts = {}) {
-    this.baseURL = `http://${serverAddr}`;
+    this.baseURL = normalizeBaseURL(serverAddr);
     this.sessionId = null;
     // D5 fix: the constructor fires session creation async; every API awaits
     // this promise first so `new Sandbox(...).eval(...)` no longer races
@@ -119,4 +132,4 @@ class Sandbox {
   }
 }
 
-module.exports = { Sandbox };
+module.exports = { Sandbox, normalizeBaseURL };

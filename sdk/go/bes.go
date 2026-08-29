@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -19,13 +20,27 @@ type Sandbox struct {
 }
 
 // New creates a new Sandbox client.
+//
+// serverAddr may be a bare "host:port" (resolved as http://, the historical
+// default for local bes-server) or carry an explicit "http://" / "https://"
+// scheme to reach a TLS fronted instance.
 func New(serverAddr string) *Sandbox {
 	return &Sandbox{
-		baseURL: "http://" + serverAddr,
+		baseURL: normalizeBaseURL(serverAddr),
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// normalizeBaseURL keeps backward compatibility: a bare host:port stays
+// http://, while an address that already carries an http:// or https://
+// scheme is used verbatim so HTTPS endpoints can be reached.
+func normalizeBaseURL(serverAddr string) string {
+	if strings.HasPrefix(serverAddr, "http://") || strings.HasPrefix(serverAddr, "https://") {
+		return serverAddr
+	}
+	return "http://" + serverAddr
 }
 
 // SessionOptions configures a session.
