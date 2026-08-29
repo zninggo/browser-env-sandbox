@@ -19,6 +19,7 @@ import (
 	"github.com/zninggo/bes/internal/bridge"
 	"github.com/zninggo/bes/internal/debug"
 	"github.com/zninggo/bes/internal/fpengine"
+	"github.com/zninggo/bes/internal/fpupdate"
 	"github.com/zninggo/bes/internal/netlayer"
 	"github.com/zninggo/bes/internal/sandbox"
 	"github.com/zninggo/bes/pkg/api"
@@ -93,6 +94,13 @@ func main() {
 		}
 	}()
 
+	// Auto-update fingerprint data: check npm registry every 24h for new
+	// apify/fingerprint-generator releases. Hot-reload without restart.
+	// Disable via BES_FP_AUTO_UPDATE=0.
+	if os.Getenv("BES_FP_AUTO_UPDATE") != "0" {
+		go startFpAutoUpdate()
+	}
+
 	// Wait for interrupt / SIGTERM, then shut down gracefully.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -111,6 +119,42 @@ func main() {
 // defaultChromeVersion is the Chrome version used for TLS fingerprint target.
 // Should match the fingerprint engine's default browser version.
 const defaultChromeVersion = "150"
+
+// startFpAutoUpdate runs a background loop that checks the npm registry
+// every 24 hours for new apify/fingerprint-generator releases. When a new
+// version is found, it downloads, parses, and hot-reloads the fingerprint
+// data without restarting the server.
+func startFpAutoUpdate() {
+	dataPath := "data/fp_real_data.json"
+	if p := os.Getenv("BES_FP_DATA"); p != "" {
+		dataPath = p
+	}
+
+	time.Sleep(5 * time.Second)
+	checkAndUpdateFp(dataPath)
+
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		checkAndUpdateFp(dataPath)
+	}
+}
+
+func checkAndUpdateFp(dataPath string) {
+	log.Printf("[bes-server] checking fingerprint data updates...")
+	updated, version, err := fpupdate.CheckAndUpdate(dataPath)
+	if err != nil {
+		log.Printf("[bes-server] fp update check failed: %v", err)
+		return
+	}
+	if updated {
+		log.Printf("[bes-server] fingerprint data updated to %s, hot-reloading...", version)
+		fpengine.ReloadFpRealData()
+		stats := fpengine.FpDataStats()
+		log.Printf("[bes-server] fp data loaded: %d GPUs, %d screens, %d hwConc, %d devMem",
+			stats["gpus"], stats["screens"], stats["hardware_concurrency"], stats["device_memory"])
+	}
+}
 
 // cdpBridge adapts bridge.Service to the debug.SessionProvider interface
 // (Eval + GetSessions), keeping both packages unaware of each other.
