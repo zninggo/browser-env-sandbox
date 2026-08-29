@@ -138,16 +138,49 @@
     parser.toJSON = function() { return this.href; };
     return parser;
   };
+  // blobToSource synchronously extracts a Worker-runnable script string from a
+  // Blob. bes Blobs expose _besBytes() (the flattened constructor parts); other
+  // Blob-likes (polyfilled / cross-realm) may expose a synchronous text() or
+  // arrayBuffer() — when they return a Promise we cannot await it here, so we
+  // fall back to an empty string. The empty string is still written so the url
+  // key exists; worker.go then runs an empty script (no-op) rather than reading
+  // `undefined` and mis-attributing a missing source.
+  function blobToSource(blob) {
+    if (!blob) return '';
+    if (typeof blob._besBytes === 'function') {
+      var bytes = blob._besBytes();
+      var s = '';
+      for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      return s;
+    }
+    // Synchronous text() (some polyfills return a string, not a Promise).
+    if (typeof blob.text === 'function') {
+      var t = blob.text();
+      if (typeof t === 'string') return t;
+    }
+    // Synchronous arrayBuffer() returning an ArrayBuffer (non-Promise).
+    if (typeof blob.arrayBuffer === 'function') {
+      var ab = blob.arrayBuffer();
+      if (ab && typeof ab.byteLength === 'number' && !(typeof ab.then === 'function')) {
+        var view = new Uint8Array(ab);
+        var s2 = '';
+        for (var j = 0; j < view.length; j++) s2 += String.fromCharCode(view[j]);
+        return s2;
+      }
+    }
+    return '';
+  }
   window.URL.createObjectURL = function(blob) {
     var url = 'blob:https://example.com/' + (++urlCounter);
     // Store the source so Worker(blob-URL) can read it back (worker.go's
     // Worker class resolves blob URLs through this registry).
-    if (blob && typeof blob._besBytes === 'function') {
-      var bytes = blob._besBytes();
-      var s = '';
-      for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-      urlStore[url] = s;
-    }
+    //
+    // The store must always get an entry for the url — even an empty string —
+    // so worker.go's `URL.__besBlobs[url] || ''` resolves to a real value and
+    // a missing-source Worker is distinguishable from a never-seen url. The
+    // previous guard dropped non-bes Blobs entirely (no key written), which
+    // silently broke Workers built from polyfilled/cross-realm Blobs.
+    urlStore[url] = blobToSource(blob);
     return url;
   };
   // Blob-URL lookup for the Worker bridge (read-only alias of urlStore).
@@ -281,8 +314,12 @@
       return new Blob([ab], { type: contentType || this.type });
     };
   };
-  var urlCounter = 0;
-  var urlStore = {};
+  // NOTE: urlCounter / urlStore are declared once at the top of the URL
+  // section (line ~95-96). An earlier duplicate `var urlStore = {}` here
+  // re-bound the name to a fresh object AFTER `URL.__besBlobs = urlStore`
+  // had already captured the original, so createObjectURL's closure wrote
+  // to the new object while worker.go read the old (empty) one — Workers
+  // built from blob URLs got an empty source. Do not re-declare here.
 
   // ── FormData ──
   window.FormData = function() {
