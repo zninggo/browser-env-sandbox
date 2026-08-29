@@ -447,6 +447,18 @@ type PostContextBuilder struct {
 	opts        api.SessionOptions
 }
 
+// userAgent returns the fingerprint UA (worker injection uses it so
+// worker-side navigator.userAgent matches the parent session).
+func (p *PostContextBuilder) userAgent() string {
+	if p.fp == nil {
+		return ""
+	}
+	if ua, ok := p.fp.Navigator["userAgent"].(string); ok {
+		return ua
+	}
+	return ""
+}
+
 func (p *PostContextBuilder) Build() {
 	// window = self = top = parent = frames = globalThis
 	// Constraint #4: direct references, NOT Proxy
