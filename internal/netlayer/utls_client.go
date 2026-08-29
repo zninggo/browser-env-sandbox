@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,23 +19,56 @@ import (
 // UTLSClient is a TLS-fingerprinting HTTP client using utls.
 // It precisely mimics Chrome's TLS ClientHello (JA3/JA4) at the Go level.
 //
-// Key advantage over curl_cffi: utls reproduces the exact ClientHello bytes
-// that real Chrome sends. curl_cffi wraps libcurl+openssl which has subtle
-// differences that can be detected at the TLS layer.
+// The ClientHello preset tracks the session fingerprint's Chrome version
+// (chromeVersion) so the TLS handshake, HTTP/2 frames, and User-Agent all
+// tell the same version story. The post-quantum signature algorithms
+// (0x0904-0x0906) are injected only for Chrome 140+, matching when real
+// Chrome started sending them.
 type UTLSClient struct {
-	target  string
-	proxy   string
-	timeout time.Duration
+	target        string
+	chromeVersion int
+	proxy         string
+	timeout       time.Duration
 }
 
 // NewUTLSClient creates a utls-based TLS client.
+// target is a Chrome impersonate target like "chrome150"; the numeric part
+// selects the closest available utls ClientHello preset. When no version can
+// be parsed, the preset defaults to HelloChrome_133 (utls's Chrome_Auto).
 func NewUTLSClient(target string) *UTLSClient {
 	if target == "" {
 		target = "chrome"
 	}
 	return &UTLSClient{
-		target:  target,
-		timeout: 30 * time.Second,
+		target:        target,
+		chromeVersion: parseChromeVersion(target),
+		timeout:       30 * time.Second,
+	}
+}
+
+// parseChromeVersion extracts the numeric Chrome version from a target string
+// like "chrome150". Returns 0 when no version is present.
+func parseChromeVersion(target string) int {
+	v := strings.TrimPrefix(strings.ToLower(target), "chrome")
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// utlsPresetFor maps a Chrome version to the closest available utls preset.
+// utls v1.8.2 ships Chrome presets up to 133; newer versions reuse 133
+// (ClientHello bytes have been stable across recent Chrome releases apart
+// from the PQ signature algorithms, which are injected separately below).
+func utlsPresetFor(chromeVersion int) utls.ClientHelloID {
+	switch {
+	case chromeVersion >= 133:
+		return utls.HelloChrome_133
+	case chromeVersion >= 120:
+		return utls.HelloChrome_131
+	default:
+		return utls.HelloChrome_133
 	}
 }
 
@@ -58,11 +92,12 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, host, port string) (net.Conn,
 		return nil, fmt.Errorf("dial failed: %w", err)
 	}
 
+	preset := utlsPresetFor(c.chromeVersion)
 	tlsConn := utls.UClient(conn, &utls.Config{
 		ServerName: host,
-	}, utls.HelloChrome_133)
+	}, preset)
 
-	// Build the ClientHello with Chrome 133 spec. BuildHandshakeState (with
+	// Build the handshake state with the preset. BuildHandshakeState (with
 	// session) sets clientHelloBuildStatus = BuildByUtls, so HandshakeContext
 	// will NOT re-run applyPresetByID (which would overwrite our mods).
 	// It WILL re-run ApplyConfig + MarshalClientHello, picking up our changes.
@@ -72,19 +107,22 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, host, port string) (net.Conn,
 	}
 
 	// Post-build: inject post-quantum signature algorithms (0x0904-0x0906)
-	// into the SignatureAlgorithmsExtension. Modern Chrome (140+) includes
-	// these, and without them the JA4 sig-alg hash differs from real Chrome.
-	for _, ext := range tlsConn.Extensions {
-		if sigExt, ok := ext.(*utls.SignatureAlgorithmsExtension); ok {
-			sigExt.SupportedSignatureAlgorithms = append(
-				[]utls.SignatureScheme{
-					sigSchemeMLDSA65SHA256,
-					sigSchemeMLDSA87SHA512,
-					sigSchemeSLHDSA192sSHA256,
-				},
-				sigExt.SupportedSignatureAlgorithms...,
-			)
-			break
+	// into the SignatureAlgorithmsExtension. Chrome 140+ includes these, and
+	// without them the JA4 sig-alg hash differs from real Chrome. Older
+	// Chrome versions must NOT send them (the JA4 would be ahead of its time).
+	if c.chromeVersion >= 140 {
+		for _, ext := range tlsConn.Extensions {
+			if sigExt, ok := ext.(*utls.SignatureAlgorithmsExtension); ok {
+				sigExt.SupportedSignatureAlgorithms = append(
+					[]utls.SignatureScheme{
+						sigSchemeMLDSA65SHA256,
+						sigSchemeMLDSA87SHA512,
+						sigSchemeSLHDSA192sSHA256,
+					},
+					sigExt.SupportedSignatureAlgorithms...,
+				)
+				break
+			}
 		}
 	}
 
@@ -168,9 +206,6 @@ func (c *UTLSClient) requestHTTP1(method, reqURL string, headers map[string]stri
 	reqLine = fmt.Sprintf("%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, parsedURL.Host)
 	for k, v := range headers {
 		reqLine += fmt.Sprintf("%s: %s\r\n", k, v)
-	}
-	if _, ok := headers["User-Agent"]; !ok {
-		reqLine += "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36\r\n"
 	}
 	if _, ok := headers["Accept"]; !ok {
 		reqLine += "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"

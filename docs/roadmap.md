@@ -54,9 +54,9 @@
 ## Phase 4: 网络层 (netlayer)
 - [x] XHR/fetch 拦截架构设计
 - [x] 离线 replay 引擎
-- [x] 在线转发 (curl-impersonate + curl_cffi + Go HTTP 三级 fallback)
+- [x] 在线转发（纯 Go utls，curl-impersonate/curl_cffi 死代码已移除）
 - [x] Cookie jar (与 document.cookie 联动)
-- [x] TLS 指纹配置 (与 UA 版本一致)
+- [x] TLS 指纹配置（utls 预设按会话指纹 Chrome 版本动态选择，PQ sig algs 仅 ≥140 注入；tlsTarget per-session 透传）
 - [x] 代理管理 (per-session)
 - [x] 请求录制
 - [x] **XHR/fetch → Go FunctionCallback → NetHandler 接线** (2026-08-28)
@@ -64,6 +64,7 @@
 - [x] **验证：沙箱内 XHR → 真实 HTTP 请求 → 响应回传完整链路** (2026-08-28)
 - [x] 原生 Go TLS 指纹（不依赖 curl_cffi Python 子进程）
 - [x] 同步 + 异步 XHR 双模式（`__besNetRequest` 同步阻塞 / `__besNetRequestAsync` + setTimeout 回 Isolate 线程；Bug 6 恢复同步 XHR，回调捕获已在 Isolate 线程完成）
+- [x] H2/UA 版本对齐（删硬编码默认 UA，UA 一律由会话指纹提供）(2026-08-29)
 
 里程碑 M4: 网络层可用 — 沙箱 XHR/fetch 可发真实网络请求 ✅ (2026-08-28)
 
@@ -93,6 +94,8 @@
 - [x] 多 session 并发隔离验证
 - [x] 快照/指纹热切换
 - [x] 设备类型 (PC/Mobile)
+- [x] **Profile 持久化接线（save-profile / resume API，指纹 seed + cookie 还原）** (2026-08-29)
+- [x] **idle session 自动清理（30 分钟，bridge Service 内置）** (2026-08-29)
 - [ ] 其他环境验证（更多页面 JS 场景）
 - [x] 性能基准 (Isolate 池化 vs 新建)
 - [ ] 文档完善
@@ -104,8 +107,8 @@
 ### P0 — 基础设施补全
 - [x] Dockerfile + docker-compose 部署
 - [x] MCP (Model Context Protocol) server 适配
-- [x] 原生 Go TLS 指纹（utls `HelloChrome_133` + post-quantum signature schemes，不再依赖 curl_cffi/curl-impersonate）
-- [ ] HTTP/3 (QUIC) 支持（`quic.go` 仅为占位，`CheckAvailable()` 返回 false，未实现真实 QUIC 传输）
+- [x] 原生 Go TLS 指纹（utls + post-quantum signature schemes，不再依赖 curl_cffi/curl-impersonate；ClientHello 预设按会话指纹版本动态选择）
+- [ ] HTTP/3 (QUIC) 支持（假实现空壳已删除；真实需求出现时接 quic-go）
 - [x] Playwright/Puppeteer 兼容层
 
 ### P1 — 功能增强
@@ -146,3 +149,13 @@
 - [x] Bug F: `new Event()` / `new CustomEvent()` 补 preventDefault/stopPropagation/stopImmediatePropagation/initEvent（JS BesEvent 包装 + Event.prototype 方法）
 - [x] Bug G: BES-USAGE.md 端口 18900 → 19821（与 SDK/Docker 默认一致）
 - [x] Bug H: roadmap.md 同步/异步 XHR 描述更新 + Node SDK 提供 `Sandbox.create()` 静态工厂与 `ready` promise
+
+## TLS 版本一致性 + 死代码清理 + Profile 接线 (2026-08-29)
+
+- [x] utls ClientHello 预设按会话指纹 Chrome 版本动态选择（`utlsPresetFor`：≥133 → HelloChrome_133，120-132 → HelloChrome_131）
+- [x] PQ signature algorithms（0x0904-0x0906）仅 Chrome ≥140 条件注入
+- [x] H2/HTTP1.1 硬编码默认 UA（Chrome/131）删除，UA 一律由会话指纹提供
+- [x] tlsTarget per-session 透传（NetHandlerFactory 带 fingerprint，bes-server 用 `fp.Browser.Version` 构建 target）
+- [x] 死代码删除：`curl_impersonate.go`（CurlImpersonate/CurlCffiClient）、`tls_profile.go`（DefaultTLSProfiles/GetTLSProfile）、`buildChromeClientHelloSpec`、`quic.go`（假 H3）；活代码重组为 `tls_client.go` + `proxy_pool.go`
+- [x] internal/session 处置：删除与 bridge Service 重复的 Manager，ProfileStore 接线 bridge（save-profile/resume API + idle 清理移植）
+- [x] 验证：WSL CGO 编译通过 + selftest 210/210 + profile API 冒烟（快照→恢复→cookie/UA 还原全链路）

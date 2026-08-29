@@ -63,8 +63,8 @@ type RecordedResponse struct {
 }
 
 // New creates a network handler with the given mode.
-// tlsTarget is the curl-impersonate/curl_cffi target for live mode TLS
-// fingerprint matching (e.g. "chrome150"). Empty string defaults to "chrome150".
+// tlsTarget is the Chrome impersonate target for live mode TLS fingerprint
+// matching (e.g. "chrome150"). Empty string defaults to "chrome150".
 func New(mode Mode, replayFile, proxy, tlsTarget string) (*Handler, error) {
 	h := &Handler{
 		mode:      mode,
@@ -174,8 +174,7 @@ func (h *Handler) handleLive(method, urlStr string, headers map[string]string, b
 		}
 	}
 
-	// Use TLSClient (curl-impersonate → curl_cffi → standard HTTP fallback)
-	// for TLS fingerprint matching with the UA version.
+	// Use TLSClient (utls Chrome-fingerprinted HTTP/2) for the request.
 	if h.tlsClient != nil {
 		resp, err := h.tlsClient.Request(method, urlStr, headers, body)
 		if err != nil {

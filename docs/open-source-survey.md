@@ -123,17 +123,17 @@ bes 与全部竞品的根本差异：上述项目都在"真浏览器怎么藏"�
 - HTTP/1.1 回退（仅 ALPN 未协商 h2 时）
 - Cookie jar（RFC 6265 scope）+ 代理 CONNECT
 
-**问题清单**：
+**问题清单**（2026-08-29 已修复 1/2/3/5/6，4 随死代码一并删除，7 保持现状）：
 
-| # | 问题 | 严重度 | 证据 |
+| # | 问题 | 严重度 | 状态 |
 |---|------|--------|------|
-| 1 | TLS 三层版本号互相不一致 | 🔴 高 | ClientHello=Chrome133+PQ / H2帧=Chrome151 / 默认UA=Chrome131 / 指纹引擎=148-152 |
-| 2 | utls 预设固定 Chrome133，不随指纹版本切换 | 🔴 高 | `utls_client.go:63` 硬编码 `HelloChrome_133` |
-| 3 | `tls_profile.go` 所有版本数据完全相同 | 🟡 中 | 7 个版本的 JA3/H2Settings/HeaderOrder 逐字相同 |
-| 4 | `tls_profile.go` 产出数据只存不读 | 🟡 中 | `manager.go:78-87` 存入 `TLSProfile` 后全项目无消费者 |
-| 5 | `tls_spec.go` `buildChromeClientHelloSpec()` 是死代码 | 🟡 中 | 全项目无调用 |
-| 6 | `curl_impersonate.go` CurlImpersonate/CurlCffiClient 是死代码 | 🟡 中 | ~170 行无引用 |
-| 7 | `quic.go` QUICClient 是空壳 | 🟡 中 | `CheckAvailable()` 硬编码 `false` |
+| 1 | TLS 三层版本号互相不一致 | 🔴 高 | ✅ 已修复：per-session 版本透传 + utls 预设动态选择 |
+| 2 | utls 预设固定 Chrome133，不随指纹版本切换 | 🔴 高 | ✅ 已修复：`utlsPresetFor` 版本映射 |
+| 3 | `tls_profile.go` 所有版本数据完全相同 | 🟡 中 | ✅ 已删除（产出数据无消费者，死代码） |
+| 4 | `tls_profile.go` 产出数据只存不读 | 🟡 中 | ✅ 已删除 |
+| 5 | `tls_spec.go` `buildChromeClientHelloSpec()` 是死代码 | 🟡 中 | ✅ 已删除（PQ 常量保留） |
+| 6 | `curl_impersonate.go` CurlImpersonate/CurlCffiClient 是死代码 | 🟡 中 | ✅ 已删除（TLSClient 移至 tls_client.go） |
+| 7 | `quic.go` QUICClient 是空壳 | 🟡 中 | 保持现状（假实现误导性已消除，真实需求出现时接 quic-go） |
 
 ### 2.3 go.mod 实际依赖
 
@@ -585,15 +585,16 @@ if (typeof bes.canvasRender === 'function') {
 | 优先级 | 行动项 | 维度 | 状态 |
 |--------|--------|------|------|
 | ✅ | v8go 迁移到 tommie fork + 自行 build | 沙箱 | 已完成 |
-| ✅ | TLS 降级链修正为纯 utls | TLS | 已完成（死代码残留） |
-| **P0** | 清理 curl_impersonate.go / tls_spec.go / tls_profile.go / quic.go 死代码 | TLS | 待执行 |
-| **P0** | utls 预设按 Chrome 版本动态切换 + PQ 补丁条件注入 | TLS | 待执行 |
-| **P0** | H2/UA 版本对齐（删硬编码默认 UA） | TLS | 待执行 |
+| ✅ | TLS 降级链修正为纯 utls | TLS | 已完成 |
+| ✅ | 清理 curl_impersonate.go / tls_spec.go / tls_profile.go / quic.go 死代码 | TLS | 已完成（2026-08-29） |
+| ✅ | utls 预设按 Chrome 版本动态切换 + PQ 补丁条件注入 | TLS | 已完成（2026-08-29） |
+| ✅ | H2/UA 版本对齐（删硬编码默认 UA）+ tlsTarget per-session 透传 | TLS | 已完成（2026-08-29） |
 | **P0** | Worker 真实执行（v8go 子 Isolate） | 沙箱 | 待执行 |
 | **P0** | ES Module 支持（import()） | 沙箱 | 待执行 |
 | **P1** | WebSocket 真实连接（Go websocket + JS 桥接） | 沙箱 | 待执行 |
 | **P1** | Canvas 预采集回放（方案 1：数据集 + toDataURL 拦截替换） | 渲染 | 待执行 |
-| **P1** | AGENTS.md / roadmap.md 文档修正 | 全局 | 待执行 |
+| ✅ | AGENTS.md / roadmap.md 文档修正 | 全局 | 已完成（2026-08-29） |
+| ✅ | internal/session 孤儿包处置（Manager 删除 + ProfileStore 接线 bridge） | 架构 | 已完成（2026-08-29） |
 | **P2** | FingerprintJS + CreepJS 嵌入 selftest 检测闭环 | 指纹 | 待执行 |
 | **P2** | 指纹采样联合分布（GPU×OS×Screen） | 指纹 | 待执行 |
 | **P2** | 采 tls-client 开源 profile 数据补 Chrome 版本映射 | TLS | 待执行 |

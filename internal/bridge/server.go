@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zninggo/bes/internal/captcha"
+	"github.com/zninggo/bes/internal/session"
 	"github.com/zninggo/bes/pkg/api"
 )
 
@@ -28,6 +29,11 @@ import (
 //	GET    /api/session/{id}/cookies          get cookie jar
 //	POST   /api/session/{id}/cookies          set a cookie
 //	DELETE /api/session/{id}                  close session
+//	GET    /api/profile                       list saved profiles
+//	GET    /api/profile/{id}                  read one profile
+//	POST   /api/profile/{id}/resume           create a session from a profile
+//	POST   /api/session/{id}/save-profile     snapshot a session into the store
+//	DELETE /api/profile/{id}                  delete a profile
 //	GET    /api/session/{id}/stream/console   SSE stream of console messages
 //	GET    /api/session/{id}/stream/network   SSE stream of network events
 //	GET    /health                            liveness probe (no auth)
@@ -56,6 +62,11 @@ func NewServer(addr string, svc *Service, authToken string) *Server {
 	mux.HandleFunc("GET /api/session/{id}/cookies", s.auth(s.getCookies))
 	mux.HandleFunc("POST /api/session/{id}/cookies", s.auth(s.setCookie))
 	mux.HandleFunc("DELETE /api/session/{id}", s.auth(s.closeSession))
+	mux.HandleFunc("POST /api/session/{id}/save-profile", s.auth(s.saveProfile))
+	mux.HandleFunc("GET /api/profile", s.auth(s.listProfiles))
+	mux.HandleFunc("GET /api/profile/{id}", s.auth(s.getProfile))
+	mux.HandleFunc("DELETE /api/profile/{id}", s.auth(s.deleteProfile))
+	mux.HandleFunc("POST /api/profile/{id}/resume", s.auth(s.resumeProfile))
 	mux.HandleFunc("GET /api/session/{id}/stream/console", s.auth(s.streamConsole))
 	mux.HandleFunc("GET /api/session/{id}/stream/network", s.auth(s.streamNetwork))
 
@@ -390,6 +401,80 @@ func (s *Server) closeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "closed"})
+}
+
+// ---------- profile handlers ----------
+
+type saveProfileRequest struct {
+	Name string `json:"name,omitempty"`
+}
+
+type profileResponse struct {
+	Profile *session.Profile `json:"profile"`
+}
+
+type profileListResponse struct {
+	Profiles []session.Profile `json:"profiles"`
+}
+
+type resumeProfileResponse struct {
+	SessionID   string           `json:"session_id"`
+	Fingerprint *api.Fingerprint `json:"fingerprint"`
+}
+
+func (s *Server) saveProfile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req saveProfileRequest
+	if r.ContentLength > 0 {
+		if err := readJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+			return
+		}
+	}
+	p, err := s.svc.SaveProfile(id, req.Name)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, profileResponse{Profile: p})
+}
+
+func (s *Server) listProfiles(w http.ResponseWriter, r *http.Request) {
+	profiles, err := s.svc.ListProfiles()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if profiles == nil {
+		profiles = []session.Profile{}
+	}
+	writeJSON(w, http.StatusOK, profileListResponse{Profiles: profiles})
+}
+
+func (s *Server) getProfile(w http.ResponseWriter, r *http.Request) {
+	p, err := s.svc.GetProfile(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, profileResponse{Profile: p})
+}
+
+func (s *Server) deleteProfile(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.DeleteProfile(r.PathValue("id")); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) resumeProfile(w http.ResponseWriter, r *http.Request) {
+	sessID, fp, err := s.svc.ResumeProfile(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, resumeProfileResponse{SessionID: sessID, Fingerprint: fp})
 }
 
 // streamConsole opens an SSE stream of console messages for a session.
