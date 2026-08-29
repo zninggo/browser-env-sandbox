@@ -81,6 +81,7 @@ type Session struct {
 	timers      *TimerManager
 	netHandler  NetHandler
 	consoleSink ConsoleSink
+	workers     *workerRegistry
 	disposed    bool
 	mu          sync.Mutex
 	pool        *IsolatePool // Bug 1 fix: return Isolate on Dispose
@@ -187,8 +188,12 @@ func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 		timers:      timerMgr,
 		netHandler:  netHandler,
 		consoleSink: consoleSink,
+		workers:     newWorkerRegistry(),
 		pool:        e.pool, // Bug 1 fix: return Isolate on Dispose
 	}
+	// Inject the real Worker constructor (dedicated isolate per worker),
+	// overwriting the env_shim stub.
+	injectWorkerConstructor(postBuilder, sess)
 
 	log.Printf("[sandbox] session %s created: %s @ %s", sess.ID, fp.Browser.Name+"/"+fp.Browser.Version, fp.OS.Name)
 	return sess, nil
@@ -527,6 +532,9 @@ func (s *Session) Dispose() {
 		return
 	}
 	s.disposed = true
+	if s.workers != nil {
+		s.workers.disposeAll()
+	}
 	s.timers.StopAll()
 	s.ctx.Close()
 	// Bug 1 fix: return Isolate to pool for reuse (prevents leak)

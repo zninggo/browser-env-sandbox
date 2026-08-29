@@ -291,6 +291,8 @@ func main() {
 		{"URL credentials parse (Bug 29)", `(function(){var u=new URL('http://user:pass@example.com/');return u.username+':'+u.password})()`, "user:pass"},
 		{"URL default port omitted (Bug 29)", `new URL('http://example.com:80/').port`, ""},
 		{"URL origin normalized (Bug 29)", `new URL('https://example.com/path?q=1').origin`, "https://example.com"},
+		// ── Worker real execution ──
+		{"Worker roundtrip postMessage (double)", `new Promise(function(res, rej){ var w = new Worker("self.onmessage = function(e){ self.postMessage(e.data * 2); };"); w.onmessage = function(e){ res(String(e.data)); }; w.onerror = function(e){ rej(new Error(String(e.message || e))); }; w.postMessage(21); setTimeout(function(){ rej(new Error("worker timeout")); }, 3000); })`, "42"},
 	}
 
 	passed := 0
