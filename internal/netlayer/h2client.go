@@ -181,6 +181,15 @@ func (c *UTLSClient) requestH2(ctx context.Context, method, reqURL string, heade
 // readH2Response reads HTTP/2 response frames from the framer until stream 1
 // reaches EndStream. It handles server SETTINGS (sends ACK), PING (sends ACK),
 // HEADERS/CONTINUATION (decodes response headers), and DATA (accumulates body).
+//
+// Flow control: HTTP/2 DATA frames are subject to flow control. The client
+// advertises an initial window (chromeH2InitialWindowSize, 6 MB) per stream
+// plus a connection-level increment (chromeH2ConnWindowUpdate). Without
+// sending WINDOW_UPDATE back as the body is consumed, a response larger than
+// the window stalls the server — it cannot send more DATA and ReadFrame
+// eventually blocks until the deadline. We track consumed bytes on both the
+// stream and the connection, and emit WINDOW_UPDATE once each crosses a
+// refill threshold (half the initial window), mirroring what real Chrome does.
 func readH2Response(framer *http2.Framer) (*Response, error) {
 	respHeaders := make(map[string]string)
 	cookies := make(map[string]string)
@@ -195,6 +204,16 @@ func readH2Response(framer *http2.Framer) (*Response, error) {
 	// Accumulator for multi-frame header blocks (HEADERS + CONTINUATION).
 	var hdrBlock bytes.Buffer
 	hdrBlockActive := false
+
+	// Flow-control accounting. Both windows start at the values we advertised
+	// to the server (initial stream window + connection-level increment).
+	streamWindow := chromeH2InitialWindowSize
+	connWindow := chromeH2InitialWindowSize + chromeH2ConnWindowUpdate
+	// Refill once a window has dropped below half of its initial size. Using a
+	// fraction (rather than waiting until exhaustion) keeps the server fed and
+	// matches Chrome's behavior of refreshing ahead of depletion.
+	const streamRefillThreshold = chromeH2InitialWindowSize / 2
+	const connRefillThreshold = (chromeH2InitialWindowSize + chromeH2ConnWindowUpdate) / 2
 
 	for !streamEnded {
 		frame, err := framer.ReadFrame()
@@ -249,6 +268,31 @@ func readH2Response(framer *http2.Framer) (*Response, error) {
 				respBody.Write(f.Data())
 				if f.StreamEnded() {
 					streamEnded = true
+				}
+
+				// Flow control: account for the DATA we just consumed on both
+				// the stream (stream 1) and the connection (stream 0), and
+				// refresh the server's send window before it stalls. Without
+				// these WINDOW_UPDATEs a response body larger than the initial
+				// window (6 MB) hangs — the server is blocked from sending
+				// further DATA and ReadFrame blocks until the deadline.
+				consumed := int(f.Length)
+				streamWindow -= consumed
+				connWindow -= consumed
+
+				if streamWindow <= streamRefillThreshold {
+					inc := chromeH2InitialWindowSize - streamWindow
+					if err := framer.WriteWindowUpdate(1, uint32(inc)); err != nil {
+						return nil, fmt.Errorf("write stream window update: %w", err)
+					}
+					streamWindow += inc
+				}
+				if connWindow <= connRefillThreshold {
+					inc := (chromeH2InitialWindowSize + chromeH2ConnWindowUpdate) - connWindow
+					if err := framer.WriteWindowUpdate(0, uint32(inc)); err != nil {
+						return nil, fmt.Errorf("write conn window update: %w", err)
+					}
+					connWindow += inc
 				}
 			}
 
