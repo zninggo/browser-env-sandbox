@@ -157,6 +157,13 @@ func (h *Handler) handleReplay(method, urlStr string) (*Response, error) {
 }
 
 func (h *Handler) handleLive(method, urlStr string, headers map[string]string, body []byte) (*Response, error) {
+	// SSRF 防护：在发起任何出站请求前拦截内网/环回/链路本地/云元数据目标，
+	// 防止持 token 客户端令 bes 代发请求到 169.254.169.254、127.0.0.1、
+	// RFC1918 内网段（见 ssrf.go）。
+	if err := CheckBlockedURL(urlStr); err != nil {
+		return nil, err
+	}
+
 	// Inject cookies scoped to this request URL (RFC 6265 §5.4). A manually
 	// provided Cookie header wins over the jar.
 	if u, err := url.Parse(urlStr); err == nil && u.Hostname() != "" {

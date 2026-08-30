@@ -6,20 +6,33 @@
 package fpupdate
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
+	"time"
 )
 
 const (
 	npmRegistryURL = "https://registry.npmjs.org/fingerprint-generator/latest"
 	networkZipPath = "package/data_files/fingerprint-network-definition.zip"
+
+	// downloadTimeout 限制单次 HTTP 请求时长，防止慢速攻击挂起更新流程。
+	downloadTimeout = 60 * time.Second
+	// maxTarballBytes 是允许下载的 tarball 上限，防止无界 io.ReadAll 造成 DoS。
+	maxTarballBytes = 64 * 1024 * 1024 // 64 MiB
+	// maxRegistryBytes 是 npm registry JSON 响应上限。
+	maxRegistryBytes = 1 << 20 // 1 MiB
+	// allowedTarballHost 是 tarball 下载唯一允许的主机，防 SSRF/恶意源。
+	allowedTarballHost = "registry.npmjs.org"
 )
 
 // NpmPackageInfo is the subset of npm registry response we need.
@@ -33,7 +46,8 @@ type NpmPackageInfo struct {
 // CheckLatestVersion queries npm registry for the latest fingerprint-generator
 // version. Returns the version string and tarball URL.
 func CheckLatestVersion() (version, tarballURL string, err error) {
-	resp, err := http.Get(npmRegistryURL)
+	client := &http.Client{Timeout: downloadTimeout}
+	resp, err := client.Get(npmRegistryURL)
 	if err != nil {
 		return "", "", fmt.Errorf("npm registry query: %w", err)
 	}
@@ -42,7 +56,8 @@ func CheckLatestVersion() (version, tarballURL string, err error) {
 		return "", "", fmt.Errorf("npm registry returned %d", resp.StatusCode)
 	}
 	var info NpmPackageInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+	dec := json.NewDecoder(io.LimitReader(resp.Body, maxRegistryBytes))
+	if err := dec.Decode(&info); err != nil {
 		return "", "", fmt.Errorf("parse npm response: %w", err)
 	}
 	return info.Version, info.Dist.Tarball, nil
@@ -119,8 +134,27 @@ func CheckAndUpdate(dataPath string) (updated bool, version string, err error) {
 	return err == nil, ver, err
 }
 
-func download(url string) ([]byte, error) {
-	resp, err := http.Get(url)
+// assertAllowedTarball 校验 tarball URL 只指向白名单官方源，防 SSRF。
+func assertAllowedTarball(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid tarball url: %w", err)
+	}
+	if strings.ToLower(u.Scheme) != "https" {
+		return fmt.Errorf("tarball scheme must be https, got %q", u.Scheme)
+	}
+	if u.Hostname() != allowedTarballHost {
+		return fmt.Errorf("tarball host %q not whitelisted", u.Hostname())
+	}
+	return nil
+}
+
+func download(rawURL string) ([]byte, error) {
+	if err := assertAllowedTarball(rawURL); err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: downloadTimeout}
+	resp, err := client.Get(rawURL)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +162,103 @@ func download(url string) ([]byte, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxTarballBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxTarballBytes {
+		return nil, fmt.Errorf("tarball exceeds %d bytes", maxTarballBytes)
+	}
+	return data, nil
+}
+
+// safeJoin 将 name 解析到 base 目录内，拒绝绝对路径、盘符、UNC、.. 穿越，
+// 防止 tar/zip entry 逃逸到目标目录外（tar slip / zip slip）。
+// 反斜杠统一归一化为正斜杠后再判，确保跨平台一致拦截 Windows 风格逃逸。
+func safeJoin(base, name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	slash := strings.ReplaceAll(name, "\\", "/")
+	slash = filepath.ToSlash(slash)
+	// 拒绝绝对路径（Unix 风格 / 开头 或 Windows 盘符 C:）。
+	if strings.HasPrefix(slash, "/") || filepath.IsAbs(name) {
+		return "", fmt.Errorf("absolute path not allowed")
+	}
+	if len(slash) >= 2 && slash[1] == ':' {
+		return "", fmt.Errorf("drive letter not allowed")
+	}
+	// 拒绝 UNC 路径。
+	if strings.HasPrefix(slash, "//") {
+		return "", fmt.Errorf("unc path not allowed")
+	}
+	// 强制相对化：剥掉所有前导分隔符。
+	slash = strings.TrimLeft(slash, "/")
+	if slash == "" || slash == "." {
+		return "", fmt.Errorf("empty relative path")
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(slash))
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("escapes base dir")
+	}
+	abs := filepath.Join(base, cleaned)
+	rel, err := filepath.Rel(base, abs)
+	if err != nil {
+		return "", err
+	}
+	relSlash := filepath.ToSlash(rel)
+	if relSlash == ".." || strings.HasPrefix(relSlash, "../") {
+		return "", fmt.Errorf("escapes base dir")
+	}
+	return abs, nil
+}
+
+// extractTarGz 解压 tar.gz 到 dest，逐 entry 用 safeJoin 校验不逃逸，并
+// 拒绝符号链接/硬链接 entry（可指向 dest 外构成逃逸）。
+func extractTarGz(tgzData []byte, dest string) error {
+	zr, err := gzip.NewReader(bytes.NewReader(tgzData))
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		target, err := safeJoin(dest, hdr.Name)
+		if err != nil {
+			return fmt.Errorf("tar entry %q: %w", hdr.Name, err)
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)&0777); err != nil {
+				return err
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode)&0777)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return err
+			}
+			out.Close()
+		case tar.TypeSymlink, tar.TypeLink:
+			return fmt.Errorf("symlink/link entry %q not allowed", hdr.Name)
+		default:
+			// 跳过 FIFO/字符设备等非常规 entry。
+		}
+	}
+	return nil
 }
 
 func extractNetworkJSON(tgzData []byte) ([]byte, error) {
@@ -138,39 +268,48 @@ func extractNetworkJSON(tgzData []byte) ([]byte, error) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	tgzPath := filepath.Join(tmpDir, "fp.tgz")
-	if err := os.WriteFile(tgzPath, tgzData, 0644); err != nil {
+	if err := extractTarGz(tgzData, tmpDir); err != nil {
 		return nil, err
 	}
 
-	pyScript := fmt.Sprintf(`
-import tarfile, zipfile, os, sys
-tgz = "%s"
-outdir = "%s"
-with tarfile.open(tgz, "r:gz") as tar:
-    tar.extractall(outdir)
-zippath = os.path.join(outdir, "package", "data_files", "fingerprint-network-definition.zip")
-if not os.path.exists(zippath):
-    print("ERROR: zip not found", file=sys.stderr)
-    sys.exit(1)
-with zipfile.ZipFile(zippath) as z:
-    z.extractall(outdir)
-jsonpath = os.path.join(outdir, "network.json")
-with open(jsonpath) as f:
-    sys.stdout.write(f.read())
-`, tgzPath, tmpDir)
-
-	pythonBin := "python3"
-	if runtime.GOOS == "windows" {
-		pythonBin = "python"
+	zipPath := filepath.Join(tmpDir, networkZipPath)
+	zr, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, fmt.Errorf("open inner zip: %w", err)
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		target, err := safeJoin(tmpDir, f.Name)
+		if err != nil {
+			return nil, fmt.Errorf("zip entry %q: %w", f.Name, err)
+		}
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return nil, err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		if err != nil {
+			rc.Close()
+			return nil, err
+		}
+		if _, err := io.Copy(out, rc); err != nil {
+			rc.Close()
+			out.Close()
+			return nil, err
+		}
+		rc.Close()
+		out.Close()
 	}
 
-	cmd := exec.Command(pythonBin, "-c", pyScript)
-	var out, stderr strings.Builder
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("python extract: %w (%s)", err, stderr.String())
-	}
-	return []byte(out.String()), nil
+	jsonPath := filepath.Join(tmpDir, "network.json")
+	return os.ReadFile(jsonPath)
 }
