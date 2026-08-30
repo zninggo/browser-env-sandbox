@@ -5374,10 +5374,15 @@ var FpRealScreens = []FpRealScreen{
 }
 
 // FpRealHardwareConcurrency contains real CPU core counts.
-var FpRealHardwareConcurrency = []int{8, 12, 10, 20, 4, 9, 14, 16, 18, 11, 32, 2, 3, 22, 6, 5, 24, 15, 28, 7, 64, 26, 27, 13, 48, 19, 17, 23, 640, 384, 40, 44, 36, 25, 96, 21, 56, 128, 30}
+// Sanitized: tainted values (640/384/96/128) that no real browser reports and
+// would mark the fingerprint as a bot have been removed. Real browsers report
+// 1-64 logical cores; values above 64 are non-physical for a client device.
+var FpRealHardwareConcurrency = []int{8, 12, 10, 20, 4, 9, 14, 16, 18, 11, 32, 2, 3, 22, 6, 5, 24, 15, 28, 7, 64, 26, 27, 13, 48, 19, 17, 23, 40, 44, 36, 25, 21, 56, 30}
 
 // FpRealDeviceMemory contains real device memory values (GB).
-var FpRealDeviceMemory = []int{32, 16, 8, 4, 0, 2, 1}
+// Sanitized: deviceMemory is reported in GB and rounded down by browsers to
+// {0.25,0.5,1,2,4,8}; 0 is not a valid reported value and was removed.
+var FpRealDeviceMemory = []int{32, 16, 8, 4, 2, 1}
 
 // FpRealFonts contains real font lists from different OS configurations.
 var FpRealFonts = [][]string{

@@ -271,7 +271,12 @@
     try { Object.defineProperty(BesEvent.prototype, Symbol.toStringTag, { value: 'Event', writable: true, configurable: true }); } catch(e) {}
     Object.setPrototypeOf(BesEvent, _besGoEvent); // static props (Event.CAPTURING_PHASE 等) 透传
     window.Event = BesEvent;
-    try { nativeFns.add(window.Event); } catch(e) {}
+    // Register Event into the native-function WeakSet owned by part3's IIFE.
+    // part3 publishes it as window.__besNativeFns; the old `nativeFns.add(...)`
+    // referenced part3's local var from this separate IIFE and always threw
+    // ReferenceError (silently swallowed by the try), so Event.toString() never
+    // returned [native code].
+    try { if (window.__besNativeFns) window.__besNativeFns.add(window.Event); } catch(e) {}
   }
 
   // --- CustomEvent ---

@@ -4,8 +4,62 @@
   'use strict';
 
   // ── WebGPU (navigator.gpu) ──
+  // Adapter vendor/architecture/device are derived from the session fingerprint
+  // (window.__besFp, published by Go before this shim runs) so they stay
+  // consistent with the WebGL renderer and OS. Previously these were hardcoded
+  // to "nvidia / ada-lovelace / RTX 4060" for every session, which leaked as a
+  // shared cross-session constant and contradicted macOS/Android/Intel
+  // fingerprints.
+  var __fp = (typeof window !== 'undefined' && window.__besFp) || {};
+  var __gpuRenderer = (__fp.gpu && __fp.gpu.renderer) || '';
+  var __gpuVendor = (__fp.gpu && __fp.gpu.vendor) || '';
+  var __os = __fp.os || '';
+
+  // Map the WebGL renderer string to a WebGPU adapter info payload. WebGPU
+  // reports lowercase vendor + architecture codename + device description.
+  function __besWebGPUAdapterInfo() {
+    var r = __gpuRenderer.toLowerCase();
+    var v = __gpuVendor.toLowerCase();
+    var vendor = 'intel';
+    var architecture = 'gen';
+    var device = 'Intel(R) UHD Graphics';
+
+    if (r.indexOf('apple') >= 0 || v.indexOf('apple') >= 0 || __os === 'macos') {
+      // Apple Silicon / macOS: Metal-backed WebGPU.
+      vendor = 'apple';
+      if (r.indexOf('m3') >= 0) { architecture = 'apple-m3'; device = 'Apple M3'; }
+      else if (r.indexOf('m2') >= 0) { architecture = 'apple-m2'; device = 'Apple M2'; }
+      else { architecture = 'apple-m1'; device = 'Apple M1'; }
+    } else if (r.indexOf('adreno') >= 0 || __os === 'android') {
+      // Android: Qualcomm Adreno (or Mali) via Vulkan.
+      vendor = 'qualcomm';
+      architecture = 'adreno';
+      device = r.indexOf('adreno') >= 0 ? __gpuRenderer : 'Adreno (TM) 730';
+    } else if (r.indexOf('mali') >= 0) {
+      vendor = 'arm';
+      architecture = 'mali';
+      device = __gpuRenderer || 'Mali-G78';
+    } else if (r.indexOf('nvidia') >= 0 || v.indexOf('nvidia') >= 0) {
+      vendor = 'nvidia';
+      if (r.indexOf('4090') >= 0) { architecture = 'ada-lovelace'; device = 'NVIDIA GeForce RTX 4090'; }
+      else if (r.indexOf('4060') >= 0) { architecture = 'ada-lovelace'; device = 'NVIDIA GeForce RTX 4060'; }
+      else if (r.indexOf('3060') >= 0) { architecture = 'ampere'; device = 'NVIDIA GeForce RTX 3060'; }
+      else { architecture = 'ada-lovelace'; device = 'NVIDIA GeForce RTX 4060'; }
+    } else if (r.indexOf('amd') >= 0 || r.indexOf('radeon') >= 0 || v.indexOf('amd') >= 0) {
+      vendor = 'amd';
+      architecture = 'rdna2';
+      device = 'AMD Radeon RX 6700 XT';
+    } else if (r.indexOf('intel') >= 0 || v.indexOf('intel') >= 0) {
+      vendor = 'intel';
+      if (r.indexOf('iris') >= 0) { architecture = 'xe'; device = 'Intel(R) Iris(R) Xe Graphics'; }
+      else { architecture = 'gen'; device = 'Intel(R) UHD Graphics 630'; }
+    }
+    return { vendor: vendor, architecture: architecture, device: device, description: vendor + ' ' + architecture };
+  }
+
+  var __adapterInfo = __besWebGPUAdapterInfo();
   var webgpuAdapter = {
-    info: { vendor: 'nvidia', architecture: 'ada-lovelace', device: 'NVIDIA GeForce RTX 4060', description: 'nvidia ada-lovelace' },
+    info: __adapterInfo,
     features: new Set(['depth-clip-control', 'depth32float-stencil8', 'timestamp-query', 'indirect-first-instance', 'shader-f16', 'rg11b10ufloat-renderable', 'bgra8unorm-storage']),
     limits: { maxTextureDimension1D: 16384, maxTextureDimension2D: 16384, maxTextureDimension3D: 2048, maxTextureArrayLayers: 2048, maxBindGroups: 4, maxBindingsPerBindGroup: 1000, maxBufferSize: 4294967296, maxUniformBufferBindingSize: 65536, maxStorageBufferBindingSize: 4294967296, maxVertexBuffers: 8, maxVertexAttributes: 16, maxVertexBufferArrayStride: 2048 },
     requestAdapterInfo: function() { return Promise.resolve(this.info); },

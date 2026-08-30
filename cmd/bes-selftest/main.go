@@ -548,18 +548,32 @@ func main() {
 
 	// ── Fingerprint joint distribution sanity ──
 	// Sample 100 fingerprints and verify GPU/Screen are OS-consistent.
+	// Cycles through windows/macos/linux/android (i%4). The android arm used to
+	// be absent (i%3), which let a missing android OS entry hide for releases:
+	// SampleOS("android") silently fell back to macos and the android GPU filter
+	// was dead code. Sampling android here is the regression guard for that.
 	fmt.Println("\n── Fingerprint joint distribution ──")
 	jointOK := true
 	for i := 0; i < 100; i++ {
 		testOS := "windows"
-		if i%3 == 1 {
+		if i%4 == 1 {
 			testOS = "macos"
-		} else if i%3 == 2 {
+		} else if i%4 == 2 {
 			testOS = "linux"
+		} else if i%4 == 3 {
+			testOS = "android"
 		}
 		fp, err := fpEng.Generate(uint64(i+1), "chrome", testOS)
 		if err != nil {
 			jointOK = false
+			failures = append(failures, fmt.Sprintf("  ❌ joint: Generate(os=%s) error: %v", testOS, err))
+			break
+		}
+		// The generated OS must match what was requested — a mismatch means
+		// SampleOS silently fell back to a different OS (the old android bug).
+		if fp.OS.Name != testOS {
+			jointOK = false
+			failures = append(failures, fmt.Sprintf("  ❌ joint: requested os=%s but got os=%s (silent fallback)", testOS, fp.OS.Name))
 			break
 		}
 		// macOS GPU must not contain Direct3D11; must contain Metal or Apple
@@ -596,6 +610,25 @@ func main() {
 				break
 			}
 		}
+		// Android GPU must be a mobile GPU (Adreno/Mali/PowerVR/OpenGL ES/Vulkan)
+		// and must never contain Direct3D11, Metal, or Apple — those are
+		// Windows/Apple-only and would be impossible on Android.
+		if testOS == "android" {
+			r := strings.ToLower(fp.GPU.Renderer)
+			if strings.Contains(r, "direct3d11") || strings.Contains(r, "metal") || strings.Contains(strings.ToLower(fp.GPU.Vendor), "apple") {
+				jointOK = false
+				failures = append(failures, fmt.Sprintf("  ❌ joint: Android GPU has D3D11/Metal/Apple: %s / %s", fp.GPU.Vendor, fp.GPU.Renderer))
+				break
+			}
+			isMobile := strings.Contains(r, "adreno") || strings.Contains(r, "mali") ||
+				strings.Contains(r, "powervr") || strings.Contains(r, "opengl es") ||
+				strings.Contains(r, "vulkan") || strings.Contains(r, "imgtec")
+			if !isMobile {
+				jointOK = false
+				failures = append(failures, fmt.Sprintf("  ❌ joint: Android GPU not a mobile GPU: %s / %s", fp.GPU.Vendor, fp.GPU.Renderer))
+				break
+			}
+		}
 		// macOS screen should have colorDepth 30 (Retina) in most cases
 		cd, _ := fp.Screen["colorDepth"].(int)
 		if testOS == "macos" && cd != 30 {
@@ -610,7 +643,7 @@ func main() {
 	}
 	if jointOK {
 		passed++
-		fmt.Printf("  ✅ 100 fingerprint samples: GPU/Screen OS-consistent (windows/macos/linux)\n")
+		fmt.Printf("  ✅ 100 fingerprint samples: GPU/Screen OS-consistent (windows/macos/linux/android)\n")
 	} else {
 		failed++
 		fmt.Printf("  ❌ Fingerprint joint distribution check failed\n")

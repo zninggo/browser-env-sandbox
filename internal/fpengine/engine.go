@@ -23,6 +23,15 @@ type Engine struct {
 	mu  sync.RWMutex
 }
 
+// navigator.hardwareConcurrency is reported by browsers as the number of
+// logical cores. Real client devices report 1-64; anything above 64 (e.g.
+// 640/384/96/128 from a polluted dataset) is non-physical and a deterministic
+// bot signal. These bounds guard both sampling and consistency validation.
+const (
+	minHardwareConcurrency = 1
+	maxHardwareConcurrency = 64
+)
+
 // New creates a fingerprint engine with the built-in knowledge base.
 func New() *Engine {
 	return &Engine{kb: DefaultKnowledgeBase()}
@@ -51,7 +60,10 @@ func (e *Engine) GenerateWithTimezone(seed uint64, browser, os, timezone string)
 	bp := e.kb.SampleBrowser(rng, browser)
 
 	// 2. Sample OS profile
-	osp := e.kb.SampleOS(rng, os)
+	osp, err := e.kb.SampleOS(rng, os)
+	if err != nil {
+		return nil, err
+	}
 
 	// 3. Sample GPU (must be consistent with OS)
 	gpu := e.kb.SampleGPU(rng, osp.Name)
@@ -81,7 +93,7 @@ func (e *Engine) GenerateWithTimezone(seed uint64, browser, os, timezone string)
 	audio := e.kb.LookupAudioHash(bp.MajorVer, osp.Name)
 
 	// 8. Window dimensions
-	winProps := e.kb.SampleWindowProps(rng, screen)
+	winProps := e.kb.SampleWindowProps(rng, osp.Name, screen)
 
 	fp := &api.Fingerprint{
 		Seed:      seed,
@@ -140,6 +152,25 @@ func ValidateConsistency(fp *api.Fingerprint) error {
 	lang, _ := fp.Navigator["language"].(string)
 	if !tzLanguageConsistent(fp.Timezone, lang) {
 		return fmt.Errorf("language/timezone mismatch: tz=%s lang=%s", fp.Timezone, lang)
+	}
+
+	// hardwareConcurrency must be within the physical browser range (1-64).
+	// A value outside this range (640/384/96/128) is a deterministic bot signal.
+	if hwConc, ok := fp.Navigator["hardwareConcurrency"]; ok {
+		switch v := hwConc.(type) {
+		case int:
+			if v < minHardwareConcurrency || v > maxHardwareConcurrency {
+				return fmt.Errorf("hardwareConcurrency out of range: %d (want %d-%d)", v, minHardwareConcurrency, maxHardwareConcurrency)
+			}
+		case int64:
+			if v < minHardwareConcurrency || v > maxHardwareConcurrency {
+				return fmt.Errorf("hardwareConcurrency out of range: %d (want %d-%d)", v, minHardwareConcurrency, maxHardwareConcurrency)
+			}
+		case float64:
+			if v < minHardwareConcurrency || v > maxHardwareConcurrency {
+				return fmt.Errorf("hardwareConcurrency out of range: %v (want %d-%d)", v, minHardwareConcurrency, maxHardwareConcurrency)
+			}
+		}
 	}
 
 	// Screen geometry invariants:
@@ -209,10 +240,16 @@ func buildNavigator(bp api.BrowserProfile, osp api.OSProfile, gpu api.GPUProfile
 	}
 
 	// Hardware concurrency: sample from real data (39 values: 4,8,9,10,11,12,14,16,18,20...)
+	// Range-guarded: real browsers report 1-64 logical cores. Values outside
+	// that range (e.g. 640/384 from a polluted dataset) are a deterministic bot
+	// signal, so clamp even if the data source is unsanitized.
 	hwConc := 8
 	hwConcVals := CurrentFpHardwareConcurrency()
 	if len(hwConcVals) > 0 {
 		hwConc = hwConcVals[rng.Intn(len(hwConcVals))]
+	}
+	if hwConc < minHardwareConcurrency || hwConc > maxHardwareConcurrency {
+		hwConc = 8
 	}
 
 	// Device memory: sample from real data (4,8,16,32...)
@@ -262,11 +299,11 @@ func buildNavigator(bp api.BrowserProfile, osp api.OSProfile, gpu api.GPUProfile
 		},
 	}
 
-	// OS-specific adjustments
-	switch osp.Name {
-	case "android":
-		nav["maxTouchPoints"] = 5
-	}
+	// Browser/OS-specific navigator adjustments. Without this, browser=firefox
+	// or safari still produced a Chrome-smelling navigator (vendor "Google
+	// Inc.", userAgentData present). See extended_profiles.go.
+	adj := adjustmentsForBrowser(bp.Name, osp.Name)
+	applyNavigatorAdjustments(nav, adj)
 
 	return nav
 }

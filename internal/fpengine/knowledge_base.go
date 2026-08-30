@@ -1,10 +1,13 @@
 package fpengine
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"image"
+	"image/png"
 	"strings"
 
 	"github.com/zninggo/browser-env-sandbox/pkg/api"
@@ -154,6 +157,24 @@ func DefaultKnowledgeBase() *KnowledgeBase {
 					"Noto Serif", "Ubuntu", "Ubuntu Mono",
 				},
 			},
+			{
+				// Android: navigator.platform reports "Linux armv8l" on 64-bit
+				// ARM (the historical quirk Android never fixed). The UA
+				// segment carries the Android version + device placeholder "K".
+				// Without this entry, SampleOS("android") silently fell back to
+				// a random OS (macos/linux), which made the android GPU filter
+				// dead code and produced macOS fingerprints for android requests.
+				Name:      "android",
+				Version:   "14",
+				Platform:  "Linux armv8l",
+				UASegment: "Linux; Android 14; K",
+				DefaultFonts: []string{
+					"Roboto", "Roboto Mono", "Noto Sans", "Noto Sans Mono",
+					"Noto Serif", "Droid Sans", "Droid Sans Mono",
+					"Cousine", "Coming Soon", "Dancing Script",
+					"Carrois Gothic SC", "Cutive Mono", "Anonymous Pro",
+				},
+			},
 		},
 		GPUs: map[string][]GPUEntry{
 			"windows": {
@@ -173,6 +194,16 @@ func DefaultKnowledgeBase() *KnowledgeBase {
 				{Vendor: "Google Inc. (NVIDIA)", Renderer: "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 OpenGL 4.5)"},
 				{Vendor: "Google Inc. (Intel)", Renderer: "ANGLE (Intel, Intel(R) UHD Graphics OpenGL)"},
 				{Vendor: "Mesa/X.org", Renderer: "llvmpipe (LLVM 15.0.7, 256 bits)"},
+			},
+			"android": {
+				// Android renders via OpenGL ES / Vulkan; Mali (Samsung/Exynos),
+				// Adreno (Qualcomm), PowerVR (ImgTec) are the real mobile GPUs.
+				// Direct3D11/Metal never appear on Android.
+				{Vendor: "Qualcomm", Renderer: "Adreno (TM) 650"},
+				{Vendor: "Qualcomm", Renderer: "Adreno (TM) 730"},
+				{Vendor: "ARM", Renderer: "Mali-G78 MP24"},
+				{Vendor: "ARM", Renderer: "Mali-G715 MC11"},
+				{Vendor: "Imagination Technologies", Renderer: "PowerVR Rogue GE8320"},
 			},
 		},
 		Screens: map[string][]ScreenEntry{
@@ -245,7 +276,14 @@ func (kb *KnowledgeBase) SampleBrowser(rng *seededRNG, preferred string) api.Bro
 	}
 }
 
-func (kb *KnowledgeBase) SampleOS(rng *seededRNG, preferred string) api.OSProfile {
+// SampleOS picks an OS profile. When preferred is non-empty it MUST match a
+// known OS entry; an unknown preferred returns an explicit error instead of
+// silently falling back to a random OS. The silent fallback was the root cause
+// of the android GPU defect: SampleOS("android") returned macos (no android
+// entry existed), which then routed SampleGPU into the macos/Metal branch and
+// made the android GPU filter dead code. Failing loudly here ensures a missing
+// OS entry can never again disguise itself as a different OS.
+func (kb *KnowledgeBase) SampleOS(rng *seededRNG, preferred string) (api.OSProfile, error) {
 	entries := kb.OSes
 	if preferred != "" {
 		var filtered []OSEntry
@@ -254,9 +292,10 @@ func (kb *KnowledgeBase) SampleOS(rng *seededRNG, preferred string) api.OSProfil
 				filtered = append(filtered, o)
 			}
 		}
-		if len(filtered) > 0 {
-			entries = filtered
+		if len(filtered) == 0 {
+			return api.OSProfile{}, fmt.Errorf("SampleOS: unknown preferred OS %q (no matching entry; add it to KnowledgeBase.OSes)", preferred)
 		}
+		entries = filtered
 	}
 	e := entries[rng.Intn(len(entries))]
 	return api.OSProfile{
@@ -265,7 +304,7 @@ func (kb *KnowledgeBase) SampleOS(rng *seededRNG, preferred string) api.OSProfil
 		Platform:     e.Platform,
 		UASegment:    e.UASegment,
 		DefaultFonts: e.DefaultFonts,
-	}
+	}, nil
 }
 
 func (kb *KnowledgeBase) SampleGPU(rng *seededRNG, osName string) api.GPUProfile {
@@ -313,6 +352,23 @@ func filterGPUsByOS(gpus []FpRealGPU, osName string) []FpRealGPU {
 			// Most apify Linux entries don't have D3D/Metal in the renderer.
 			if !strings.Contains(g.Renderer, "Direct3D11") &&
 				!strings.Contains(g.Renderer, "Metal") &&
+				!strings.Contains(g.Vendor, "Apple") {
+				out = append(out, g)
+			}
+		case "android":
+			// Android GPUs are Mali/Adreno/PowerVR/Mali-G; WebGL2 renders via
+			// OpenGL ES or Vulkan. Direct3D11 is Windows-only and Metal is
+			// Apple-only — both are impossible on Android and must be excluded.
+			r := g.Renderer
+			isAndroidGPU := strings.Contains(r, "Mali") ||
+				strings.Contains(r, "Adreno") ||
+				strings.Contains(r, "PowerVR") ||
+				strings.Contains(r, "ImgTec") ||
+				strings.Contains(r, "OpenGL ES") ||
+				strings.Contains(r, "Vulkan")
+			if isAndroidGPU &&
+				!strings.Contains(r, "Direct3D11") &&
+				!strings.Contains(r, "Metal") &&
 				!strings.Contains(g.Vendor, "Apple") {
 				out = append(out, g)
 			}
@@ -436,6 +492,20 @@ func (kb *KnowledgeBase) LookupCanvasHash(majorVer int, osName, gpuVendor string
 	}
 }
 
+// LookupAudioHash returns the AudioContext fingerprint hash for the given
+// browser major version and OS.
+//
+// SYNTHETIC LIMITATION (documented): when no pre-collected hash exists in
+// kb.AudioHashes, the hash is derived deterministically from a sha256 of
+// "audio:<ver>:<os>". This is NOT a real OfflineAudioContext output — it is a
+// stable, self-consistent placeholder so the fingerprint is never left empty.
+// The hash is OS/version-consistent (same seed → same hash) but does not
+// reflect a real machine's audio DSP output. A real Audio fingerprint dataset
+// (analogous to canvas_dataset.json, pre-collected via OfflineAudioContext on
+// real hardware) is not yet wired in; until it is, consumers should treat
+// Audio.Hash as synthetic. The injection side historically also left this
+// unused, which is acceptable for current threat models that check hash
+// presence/length rather than DSP integrity, but is tracked as a known gap.
 func (kb *KnowledgeBase) LookupAudioHash(majorVer int, osName string) api.AudioFP {
 	key := audioHashKey(majorVer, osName)
 	hash := kb.AudioHashes[key]
@@ -448,93 +518,51 @@ func (kb *KnowledgeBase) LookupAudioHash(majorVer int, osName string) api.AudioF
 	return api.AudioFP{Hash: hash}
 }
 
-// syntheticCanvasDataURL generates a deterministic, realistic-length base64
-// PNG data URL for canvas.toDataURL(). Real Chrome canvas output is 1-3KB of
-// base64; a 16-hex-char hash is an instant red flag for server-side checks.
+// syntheticCanvasDataURL generates a deterministic, decodable PNG for
+// canvas.toDataURL(). Real Chrome canvas output is a valid PNG the server can
+// png.Decode; the previous synthetic blob used raw pseudo-random bytes as the
+// IDAT payload, which is not a valid zlib/deflate stream and fails any
+// png.Decode / zlib integrity check.
 //
-// Approach (per fingerprint-suite/camoufox research): no real base64 is stored
-// (it's a cross-session device identifier). Instead we generate a deterministic
-// PNG-like blob from the seed components — same fingerprint → same canvas,
-// different fingerprint → different canvas. The output mimics a minimal valid
-// PNG structure so length and header checks pass.
+// We now render a small RGBA image whose pixels are derived deterministically
+// from the seed components (same fingerprint → same canvas, different
+// fingerprint → different canvas) and encode it with image/png, which
+// produces a fully spec-compliant PNG: signature, IHDR, deflate-compressed
+// IDAT, correct CRC32, IEND. png.Decode and zlib readers pass.
 func syntheticCanvasDataURL(majorVer int, osName, gpuVendor string) string {
-	// Seed from components
 	seed := fmt.Sprintf("canvas:%d:%s:%s", majorVer, osName, gpuVendor)
 	h := sha256.Sum256([]byte(seed))
 
-	// Build a minimal PNG-like blob: 8-byte signature + IHDR + IDAT + IEND.
-	// Total ~1.2KB base64 — within real Chrome canvas output range.
-	png := make([]byte, 0, 900)
-
-	// PNG signature
-	png = append(png, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
-
-	// IHDR chunk (13 bytes data): 280x60, 8-bit RGBA
-	ihdr := make([]byte, 13)
-	ihdr[0], ihdr[1], ihdr[2], ihdr[3] = 0, 0, 1, 0x18 // width=280
-	ihdr[4], ihdr[5], ihdr[6], ihdr[7] = 0, 0, 0, 0x3C // height=60
-	ihdr[8] = 8  // bit depth
-	ihdr[9] = 6  // color type (RGBA)
-	ihdr[10] = 0 // compression
-	ihdr[11] = 0 // filter
-	ihdr[12] = 0 // interlace
-	png = appendChunk(png, 0x49484452, ihdr) // "IHDR"
-
-	// IDAT chunk: deterministic pseudo-random pixel data (deterministic noise
-	// from seed — same approach as camoufox canvas:seed).
-	// 280*60*4 = 67200 bytes raw → deflate to ~800 bytes. We generate ~800
-	// bytes of seed-deterministic data that looks like deflated pixel data.
-	idatData := make([]byte, 820)
-	for i := range idatData {
-		// Mix seed hash bytes deterministically
-		b := h[i%32] ^ h[(i*7+3)%32] ^ byte(i)
-		idatData[i] = b
-	}
-	png = appendChunk(png, 0x49444154, idatData) // "IDAT"
-
-	// IEND chunk (0 bytes data)
-	png = appendChunk(png, 0x49454E44, nil) // "IEND"
-
-	return base64.StdEncoding.EncodeToString(png)
-}
-
-// appendChunk appends a PNG chunk: length(4) + type(4) + data + crc(4)
-func appendChunk(png []byte, chunkType uint32, data []byte) []byte {
-	length := uint32(len(data))
-	png = append(png, byte(length>>24), byte(length>>16), byte(length>>8), byte(length))
-	png = append(png, byte(chunkType>>24), byte(chunkType>>16), byte(chunkType>>8), byte(chunkType))
-	png = append(png, data...)
-	// CRC32 over type+data (simplified — use a fixed CRC, real servers rarely
-	// re-parse the PNG; they check length/header/format, not pixel integrity)
-	crc := crc32Checksum(chunkType, data)
-	png = append(png, byte(crc>>24), byte(crc>>16), byte(crc>>8), byte(crc))
-	return png
-}
-
-// crc32Checksum computes CRC32 (PNG polynomial) over the chunk type + data.
-func crc32Checksum(chunkType uint32, data []byte) uint32 {
-	const poly = 0xEDB88320
-	buf := make([]byte, 4)
-	buf[0] = byte(chunkType >> 24)
-	buf[1] = byte(chunkType >> 16)
-	buf[2] = byte(chunkType >> 8)
-	buf[3] = byte(chunkType)
-	buf = append(buf, data...)
-	crc := uint32(0xFFFFFFFF)
-	for _, b := range buf {
-		crc ^= uint32(b)
-		for i := 0; i < 8; i++ {
-			if crc&1 != 0 {
-				crc = (crc >> 1) ^ poly
-			} else {
-				crc >>= 1
-			}
+	// Small canvas (280x60) keeps output within real Chrome's 1-3KB base64
+	// range while staying cheap to encode.
+	const w, hgt = 280, 60
+	img := image.NewNRGBA(image.Rect(0, 0, w, hgt))
+	for y := 0; y < hgt; y++ {
+		for x := 0; x < w; x++ {
+			i := (y*w + x) * 4
+			// Deterministic per-pixel noise mixed from the seed hash. NRGBA
+			// (non-premultiplied) matches toDataURL's RGBA output and needs
+			// no alpha math.
+			img.Pix[i+0] = h[(i+0)%32] ^ byte(x) ^ byte(y*3)
+			img.Pix[i+1] = h[(i+1)%32] ^ byte(y) ^ byte(x*5)
+			img.Pix[i+2] = h[(i+2)%32] ^ byte(x+y)
+			img.Pix[i+3] = 0xFF
 		}
 	}
-	return crc ^ 0xFFFFFFFF
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		// Should never happen for an in-memory NRGBA image; fall back to a
+		// 1x1 opaque pixel so callers still get a decodable PNG.
+		single := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+		single.Pix[3] = 0xFF
+		buf.Reset()
+		_ = png.Encode(&buf, single)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-func (kb *KnowledgeBase) SampleWindowProps(rng *seededRNG, screen map[string]any) api.WindowProps {
+func (kb *KnowledgeBase) SampleWindowProps(rng *seededRNG, osName string, screen map[string]any) api.WindowProps {
 	// Derive window dimensions from the actual screen to ensure consistency.
 	// Invariant: screen.height >= availHeight >= outerHeight >= innerHeight.
 	sw, _ := screen["width"].(int)
@@ -547,9 +575,22 @@ func (kb *KnowledgeBase) SampleWindowProps(rng *seededRNG, screen map[string]any
 	if ah == 0 {
 		ah = sh
 	}
+
+	// DevicePixelRatio: sample from the KB's WindowProps for this OS so DPR
+	// is OS-self-consistent (macOS Retina = 2/3, Windows = 1/1.25/1.5,
+	// Linux = 1, Android = 2/3). The previous code hardcoded 1.0, which made
+	// every macOS/Android fingerprint claim DPR 1 — an instant inconsistency.
 	dpr := 1.0
+	if props, ok := kb.WindowProps[osName]; ok && len(props) > 0 {
+		dpr = props[rng.Intn(len(props))].DevicePixelRatio
+		if dpr <= 0 {
+			dpr = 1.0
+		}
+	}
+	// screen.pixelDepth is colorDepth (24/30), NOT DPR — do not derive DPR
+	// from it. macOS colorDepth 30 with DPR 2 is the canonical Retina combo;
+	// conflating the two produced the original bug.
 	if d, ok := screen["pixelDepth"].(int); ok && d > 0 {
-		// pixelDepth == colorDepth, not DPR; we set DPR from window props
 		_ = d
 	}
 

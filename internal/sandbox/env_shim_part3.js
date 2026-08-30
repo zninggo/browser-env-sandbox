@@ -46,6 +46,18 @@
     });
 
     // offset properties (layout mock)
+    // TODO(fonts-offset): offsetWidth/offsetHeight 恒 0 是已知自洽缺口。
+    // 字体探测脚本（fingerprintjs 等）通过创建 span、设 font-family、
+    // 读取 offsetWidth 的差异判定字体是否存在；恒 0 使所有字体探测返回
+    // 相同宽度，无法通过 offset 差异判定字体存在性，与指纹声明的 KB
+    // 字体列表不自洽。
+    // 真正自洽需 per-OS/per-browser 字体宽度表（同一段文本在 Windows
+    // Segoe UI / macOS SF Pro / Linux DejaVu 下 offsetWidth 不同），当前
+    // 原任务未定义该采样语义，故本轮不强行实现——此处是所有元素的通用
+    // layout mock，贸然改恒 0 值影响面大、有破坏既有 P0 修复的风险。
+    // 当前列为已知限制：威胁模型下字体指纹以 KB 字体列表注入为主、
+    // offset 探测为辅。后续如需修复，需补任务定义字体宽度表采样语义，
+    // 再将 offsetWidth/offsetHeight 改为基于文本内容 + OS 的确定性非零值。
     Object.defineProperty(el, 'offsetWidth', { value: 0, configurable: true });
     Object.defineProperty(el, 'offsetHeight', { value: 0, configurable: true });
     Object.defineProperty(el, 'offsetTop', { value: 0, configurable: true });
@@ -144,9 +156,16 @@
   try { Object.defineProperty(location, Symbol.toStringTag, { value: 'Location', configurable: true }); } catch(e) {}
 
   // ── Native function toString spoofing ──
-  // Override Function.prototype.toString to return native format for our mocks
+  // Override Function.prototype.toString to return native format for our mocks.
+  // nativeFns is also published on window as __besNativeFns so later shim
+  // parts (part5) running in their own IIFE can register functions they
+  // define (e.g. window.Event) into the same WeakSet — without this, a
+  // cross-IIFE `nativeFns.add(window.Event)` in part5 throws ReferenceError
+  // inside a try/catch and is silently swallowed, leaving Event.toString()
+  // leaking real JS source instead of "[native code]".
   var origFnToString = Function.prototype.toString;
   var nativeFns = new WeakSet();
+  window.__besNativeFns = nativeFns;
   Function.prototype.toString = function() {
     if (nativeFns.has(this)) {
       return 'function ' + (this.name || '') + '() { [native code] }';

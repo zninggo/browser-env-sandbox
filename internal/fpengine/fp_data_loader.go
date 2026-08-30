@@ -11,6 +11,7 @@ package fpengine
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -70,6 +71,11 @@ func LoadFpRealData() (*FpRealData, error) {
 
 	data, err := loadFromJSON(fpDataPath)
 	if err != nil {
+		// Log the fallback so a polluted/broken embedded dataset is observable.
+		// Previously this was silent: a corrupt or missing JSON file would
+		// invisibly fall back to the compile-time embedded data, hiding
+		// tainted values (e.g. hwConc 640) from operators.
+		log.Printf("fpengine: fp data load failed (%s), falling back to embedded data: %v", fpDataPath, err)
 		return embeddedFallback(), nil
 	}
 

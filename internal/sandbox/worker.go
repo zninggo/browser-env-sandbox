@@ -93,6 +93,7 @@ type Worker struct {
 	timers     *TimerManager
 	console    ConsoleSink
 	userAgent  string
+	hwConc     int
 	inbound    chan string   // parent → worker mailbox (JSON envelopes)
 	outbound   chan string   // worker → parent queue (JSON envelopes)
 	stop       chan struct{} // closed by terminate()
@@ -106,8 +107,10 @@ type Worker struct {
 // parentTimers is the parent session's timer manager (used by the outbound
 // pump to deliver replies on the parent isolate thread). userAgent is the
 // session fingerprint's UA so worker-side navigator.userAgent matches the
-// parent.
-func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink, userAgent string) (*Worker, error) {
+// parent. hwConc is the session fingerprint's navigator.hardwareConcurrency
+// so the worker reports the same core count as the parent (previously
+// hardcoded 8, which desynced from the main session).
+func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink, userAgent string, hwConc int) (*Worker, error) {
 	iso := newIsolateWithLimits()
 	ctx := v8go.NewContext(iso)
 	w := &Worker{
@@ -116,6 +119,7 @@ func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink,
 		timers:     NewTimerManager(),
 		console:    console,
 		userAgent:  userAgent,
+		hwConc:     hwConc,
 		inbound:    make(chan string, 64),
 		outbound:   make(chan string, 64),
 		stop:       make(chan struct{}),
@@ -192,11 +196,17 @@ func (w *Worker) injectWorkerEnv() error {
 	iso, ctx := w.iso, w.ctx
 
 	// navigator with the fingerprint UA (workers have a navigator object but
-	// no DOM; signing scripts commonly read navigator.userAgent).
+	// no DOM; signing scripts commonly read navigator.userAgent and
+	// hardwareConcurrency). hwConc comes from the parent session fingerprint
+	// so the worker matches the main thread (was hardcoded 8).
 	if w.userAgent != "" {
+		hwConc := w.hwConc
+		if hwConc < 1 || hwConc > 64 {
+			hwConc = 8
+		}
 		navTmpl := v8go.NewObjectTemplate(iso)
 		navTmpl.Set("userAgent", w.userAgent)
-		navTmpl.Set("hardwareConcurrency", int32(8))
+		navTmpl.Set("hardwareConcurrency", int32(hwConc))
 		if navVal, err := navTmpl.NewInstance(ctx); err == nil && navVal != nil {
 			w.global().Set("navigator", navVal)
 		}
@@ -426,7 +436,7 @@ func injectWorkerConstructor(p *PostContextBuilder, sess *Session) {
 		if args := info.Args(); len(args) > 0 {
 			source = args[0].String()
 		}
-		w, err := StartWorker(source, parentTimers, sess.consoleSink, p.userAgent())
+		w, err := StartWorker(source, parentTimers, sess.consoleSink, p.userAgent(), p.hardwareConcurrency())
 		if err != nil {
 			log.Printf("[sandbox] worker create failed: %v", err)
 			// Return -1; the JS wrapper fires onerror.

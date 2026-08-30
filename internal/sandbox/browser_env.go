@@ -444,6 +444,33 @@ func (p *PostContextBuilder) userAgent() string {
 	return ""
 }
 
+// hardwareConcurrency returns the fingerprint's navigator.hardwareConcurrency
+// so worker-side navigator matches the parent session. Previously the worker
+// hardcoded 8, which desynced from the main session's sampled value and was a
+// cross-context consistency leak (signing scripts that read hwConc in both the
+// main thread and a worker would see two different numbers). Falls back to 8
+// when the fingerprint is absent or the value is out of the physical range.
+func (p *PostContextBuilder) hardwareConcurrency() int {
+	if p.fp == nil {
+		return 8
+	}
+	switch v := p.fp.Navigator["hardwareConcurrency"].(type) {
+	case int:
+		if v >= 1 && v <= 64 {
+			return v
+		}
+	case int64:
+		if v >= 1 && v <= 64 {
+			return int(v)
+		}
+	case float64:
+		if v >= 1 && v <= 64 {
+			return int(v)
+		}
+	}
+	return 8
+}
+
 func (p *PostContextBuilder) Build() {
 	// window = self = top = parent = frames = globalThis
 	// Constraint #4: direct references, NOT Proxy
@@ -497,6 +524,9 @@ func (p *PostContextBuilder) Build() {
 	// Inject comprehensive env shim (missing browser APIs)
 	// Each part runs independently so a parse error in one part doesn't
 	// block the others — all 5 parts are self-contained IIFEs.
+	// Publish fingerprint globals FIRST so part4's WebGPU shim can derive an
+	// OS/GPU-consistent adapter from window.__besFp.
+	p.injectFingerprintGlobals()
 	parts := envShimParts()
 	for i, part := range parts {
 		name := fmt.Sprintf("env-shim-part%d.js", i+1)
@@ -780,6 +810,45 @@ func injectWebGL(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerprin
 
 // injectComplexNavigator injects map/slice navigator properties via JS
 // (v8go ObjectTemplate.Set can't handle Go maps/slices directly)
+// injectFingerprintGlobals publishes a small, read-only view of the session
+// fingerprint onto window.__besFp so shim parts (running in their own IIFEs
+// with no other access to the Go-side fingerprint) can derive self-consistent
+// values. Currently consumed by env_shim_part4.js to build a WebGPU adapter
+// whose vendor/architecture match the fingerprint's GPU and OS, instead of the
+// previous hardcoded "nvidia / ada-lovelace / RTX 4060" shared by every
+// session. Must run BEFORE the shim parts execute (called just above the
+// envShimParts loop in Build).
+func (p *PostContextBuilder) injectFingerprintGlobals() {
+	if p.fp == nil {
+		// No fingerprint: install an empty object so shim guards
+		// (typeof window.__besFp) don't throw.
+		p.ctx.RunScript("window.__besFp = window.__besFp || {};", "fp-globals.js")
+		return
+	}
+	type fpGlobals struct {
+		OS      string `json:"os"`
+		Browser string `json:"browser"`
+		GPU     struct {
+			Vendor   string `json:"vendor"`
+			Renderer string `json:"renderer"`
+		} `json:"gpu"`
+	}
+	g := fpGlobals{OS: p.fp.OS.Name, Browser: p.fp.Browser.Name}
+	g.GPU.Vendor = p.fp.GPU.Vendor
+	g.GPU.Renderer = p.fp.GPU.Renderer
+	raw, err := json.Marshal(g)
+	if err != nil {
+		p.ctx.RunScript("window.__besFp = window.__besFp || {};", "fp-globals.js")
+		return
+	}
+	// Assign the JSON object directly; json.Marshal produces valid JS object
+	// literal syntax for these string fields.
+	script := fmt.Sprintf("window.__besFp = %s;", string(raw))
+	if _, err := p.ctx.RunScript(script, "fp-globals.js"); err != nil {
+		fmt.Printf("[sandbox] fp globals inject warning: %v\n", err)
+	}
+}
+
 func (p *PostContextBuilder) injectComplexNavigator() {
 	// navigator.languages
 	langs := p.fp.Languages
@@ -1111,6 +1180,33 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 		}
 		acceptLanguage = strings.Join(parts, ",")
 	}
+	// Sec-CH-UA client hint headers, derived from the fingerprint's browser
+	// version and OS so they match the User-Agent and navigator.userAgentData
+	// payload. Real Chrome sends all three on every request; the previous
+	// code sent none, so a server cross-checking UA vs sec-ch-ua saw an
+	// inconsistency (or a missing-hint red flag). Firefox/Safari don't send
+	// these and don't expose userAgentData, so we only emit them for Chrome.
+	secChUA, secChUAMobile, secChUAPlatform := "", "", ""
+	if p.fp != nil && p.fp.Browser.Name == "chrome" {
+		ver := p.fp.Browser.Version
+		secChUA = fmt.Sprintf(`"Chromium";v="%s", "Google Chrome";v="%s", "Not.A/Brand";v="24"`, ver, ver)
+		secChUAMobile = "?0"
+		if p.fp.OS.Name == "android" {
+			secChUAMobile = "?1"
+		}
+		switch p.fp.OS.Name {
+		case "windows":
+			secChUAPlatform = `"Windows"`
+		case "macos":
+			secChUAPlatform = `"macOS"`
+		case "linux":
+			secChUAPlatform = `"Linux"`
+		case "android":
+			secChUAPlatform = `"Android"`
+		default:
+			secChUAPlatform = `"Windows"`
+		}
+	}
 	// Default referer derived from the session location, as a browser would
 	// send for a subresource request: full URL same-origin, origin cross-origin
 	// (strict-origin-when-cross-origin). Empty when no valid location.
@@ -1244,6 +1340,21 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 			// own hardcoded zh-CN fallback when this is absent.
 			if _, hasAL := headerLookup(headers, "Accept-Language"); !hasAL && acceptLanguage != "" {
 				headers = setHeaderAbsent(headers, "Accept-Language", acceptLanguage)
+			}
+
+			// Sec-CH-UA client hints: aligned with User-Agent and
+			// navigator.userAgentData so UA-vs-hint cross-checks pass.
+			// Only Chrome sends these (Firefox/Safari omit userAgentData).
+			if secChUA != "" {
+				if _, has := headerLookup(headers, "Sec-CH-UA"); !has {
+					headers = setHeaderAbsent(headers, "Sec-CH-UA", secChUA)
+				}
+				if _, has := headerLookup(headers, "Sec-CH-UA-Mobile"); !has {
+					headers = setHeaderAbsent(headers, "Sec-CH-UA-Mobile", secChUAMobile)
+				}
+				if _, has := headerLookup(headers, "Sec-CH-UA-Platform"); !has {
+					headers = setHeaderAbsent(headers, "Sec-CH-UA-Platform", secChUAPlatform)
+				}
 			}
 
 			// Session-level extra headers: appended only when the request
@@ -1412,6 +1523,18 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 				}
 				if _, hasAL := headerLookup(headers, "Accept-Language"); !hasAL && acceptLanguage != "" {
 					headers = setHeaderAbsent(headers, "Accept-Language", acceptLanguage)
+				}
+				// Sec-CH-UA client hints: aligned with User-Agent (Chrome only).
+				if secChUA != "" {
+					if _, has := headerLookup(headers, "Sec-CH-UA"); !has {
+						headers = setHeaderAbsent(headers, "Sec-CH-UA", secChUA)
+					}
+					if _, has := headerLookup(headers, "Sec-CH-UA-Mobile"); !has {
+						headers = setHeaderAbsent(headers, "Sec-CH-UA-Mobile", secChUAMobile)
+					}
+					if _, has := headerLookup(headers, "Sec-CH-UA-Platform"); !has {
+						headers = setHeaderAbsent(headers, "Sec-CH-UA-Platform", secChUAPlatform)
+					}
 				}
 				for k, v := range sessExtra {
 					if _, has := headerLookup(headers, k); !has {

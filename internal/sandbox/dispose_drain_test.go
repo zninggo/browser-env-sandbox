@@ -107,7 +107,7 @@ func TestDisposeDrainsWorkerCallbacks(t *testing.T) {
 	// Spin up a worker that posts messages back to the parent, so the parent
 	// pump queues callbacks into the session's timer manager.
 	src := `self.onmessage = function(e){ self.postMessage({echo: e.data}); };`
-	w, err := StartWorker(src, sess.timers, sess.consoleSink, "")
+	w, err := StartWorker(src, sess.timers, sess.consoleSink, "", 8)
 	if err != nil {
 		t.Fatalf("StartWorker failed: %v", err)
 	}
