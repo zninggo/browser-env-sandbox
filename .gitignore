@@ -34,3 +34,7 @@ findings*.md
 progress.md
 check*.py
 review-*.md
+
+# Local backup/maintenance artifacts (not for publication)
+*.bundle
+bes-ctl.sh
