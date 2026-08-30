@@ -8,10 +8,9 @@
 
 | 版本范围 | UA-CH brands | 关键差异 |
 |---------|-------------|---------|
-| 120-123 | Chromium 12X, Google Chrome 12X, Not.A/Brand 24 | userAgentData 引入 |
-| 124-128 | 同上 | — |
-| 129-131 | 同上 | — |
-| 132-135 | 同上 | — |
+| 148-149 | Chromium;Google Chrome;Not?A_Brand | userAgentData 引入 |
+| 150-151 | 同上 | — |
+| 152 | 同上 | — |
 
 每个版本需要记录：
 - `navigator.userAgent` 模板
@@ -108,13 +107,13 @@ Win10 vs Win11 在 UA 中无法区分 (都报 NT 10.0)，但字体集和 GPU 驱
 选了 OS + GPU + 浏览器后，以下属性自动确定：
 
 ```
-OS=Windows + GPU=NVIDIA RTX4060 + Chrome 131
+OS=Windows + GPU=NVIDIA RTX4060 + Chrome 151
   ├─ navigator.platform = Win32
-  ├─ navigator.userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... Chrome/131 ..."
+  ├─ navigator.userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... Chrome/151 ..."
   ├─ WebGL renderer = "ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 ...)"
   ├─ 字体集 = Windows 默认 + NVIDIA 驱动字体
-  ├─ canvas hash = f(Chrome131, RTX4060, Win字体)  ← 需要预采集 hash 库
-  ├─ AudioContext hash = f(Chrome131, Windows)     ← 需要预采集
+  ├─ canvas hash = f(Chrome151, RTX4060, Win字体)  ← 需要预采集 hash 库
+  ├─ AudioContext hash = f(Chrome151, Windows)     ← 需要预采集
   ├─ screen.colorDepth = 24
   └─ navigator.maxTouchPoints = 0
 ```

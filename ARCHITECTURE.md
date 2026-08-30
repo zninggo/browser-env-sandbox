@@ -8,7 +8,7 @@
 ### 1.1 核心语言：Go
 
 **为什么选 Go：**
-- v8go (rogchap/v8go) — 成熟的 Go V8 binding，纯 V8 Isolate
+- v8go (zninggo/v8go，自 fork 维护) — Go V8 binding，纯 V8 Isolate
 - goroutine 并发 — 天然适合 Isolate 池化 + 多会话并发
 - gRPC 生态 — 原计划 gRPC，已改为 JSON-over-HTTP（Go 1.22 ServeMux），零 protoc 依赖
 - 编译为单二进制 — 部署简单，无运行时依赖
@@ -27,7 +27,7 @@
 ### 1.2 V8 接入：v8go
 
 ```go
-import "github.com/rogchap/v8go"
+import "github.com/zninggo/v8go"
 
 // 创建 Isolate（独立堆，GC 不共享）
 iso := v8go.NewIsolate()
