@@ -29,3 +29,8 @@ Thumbs.db
 
 # Local agent instructions (not for publication)
 AGENTS.md
+# Review/audit artifacts (not for publication)
+findings*.md
+progress.md
+check*.py
+review-*.md
