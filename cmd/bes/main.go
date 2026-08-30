@@ -34,7 +34,7 @@ func main() {
 	case "update-fp":
 		cmdUpdateFP(os.Args[2:])
 	case "version":
-		fmt.Println("bes v0.2.0 (V8 engine: v8go v0.9.0, V8 9.0)")
+		fmt.Println("bes v0.2.0 (V8 engine: v8go v0.35.1, V8 15.2)")
 	default:
 		usage()
 		os.Exit(1)
@@ -46,7 +46,7 @@ func usage() {
 
 Usage:
   bes fingerprint [--browser chrome] [--os windows] [--seed 0]
-  bes run --script <file> [--fingerprint auto] [--location <url>]
+  bes run (--script <file> | --eval <code>) [--browser chrome] [--os windows] [--seed 0] [--location <url>]
   bes export-fp --output <file> [--browser chrome] [--os windows] [--seed 0]
   bes selftest
   bes mcp                    # Start MCP server (stdio, for AI agents)
