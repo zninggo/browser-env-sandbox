@@ -229,27 +229,55 @@ func (tm *TimerManager) PendingCallbacks() int {
 }
 
 // PendingTimers returns the number of registered (not yet fired/cancelled)
-// timers. EvalAwait uses this together with PendingCallbacks to detect whether
-// any async work is outstanding before spinning.
+// timers, including recurring setInterval timers. EvalAwait does NOT use this
+// to gate its drain loop — see PendingOneShotTimers instead.
 func (tm *TimerManager) PendingTimers() int {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	return len(tm.timers)
 }
 
-// Flush waits for all pending timers to complete, up to the given timeout.
+// PendingOneShotTimers returns the number of registered one-shot timers
+// (setTimeout / requestAnimationFrame), excluding recurring setInterval
+// timers. EvalAwait's drain loop uses this to decide whether any settle-able
+// async work is still outstanding: a setInterval never settles (it repeats
+// forever), so counting it would pin hasAsync true forever and force the
+// 30s timeout. A real browser returns from eval immediately when only a
+// setInterval is registered; this method lets BES match that.
+func (tm *TimerManager) PendingOneShotTimers() int {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	n := 0
+	for _, e := range tm.timers {
+		if !e.interval {
+			n++
+		}
+	}
+	return n
+}
+
+// Flush waits for all pending one-shot timers to complete, up to the given
+// timeout. Recurring setInterval timers are excluded: they never "complete"
+// (they repeat forever), so waiting on them would always hit the timeout.
+// Excluding them lets a drain loop with an active setInterval return instead
+// of idling for the full Flush budget every iteration.
 func (tm *TimerManager) Flush(timeout time.Duration) error {
 	deadline := time.After(timeout)
 	for {
 		tm.mu.Lock()
-		count := len(tm.timers)
+		count := 0
+		for _, e := range tm.timers {
+			if !e.interval {
+				count++
+			}
+		}
 		tm.mu.Unlock()
 		if count == 0 {
 			return nil
 		}
 		select {
 		case <-deadline:
-			return fmt.Errorf("flush timed out with %d timers pending", count)
+			return fmt.Errorf("flush timed out with %d one-shot timers pending", count)
 		case <-time.After(10 * time.Millisecond):
 		}
 	}

@@ -329,12 +329,19 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 		// arrive via scheduleTimer(0) into callbackQueue; DrainCallbacks executes
 		// them on this (isolate) thread.
 		//
-		// Only spin while there is actual async work outstanding — a pending XHR,
-		// a queued callback (worker reply / fired timer), or a registered timer.
-		// When none of those are pending there is nothing left to drain, so return
+		// Only spin while there is actual settle-able async work outstanding — a
+		// pending XHR, a queued callback (worker reply / fired one-shot timer), or
+		// a registered one-shot timer (setTimeout / requestAnimationFrame). When
+		// none of those are pending there is nothing left to drain, so return
 		// immediately instead of idling for a fixed grace period (Bug fix: the old
 		// unconditional 500ms grace forced every non-Promise eval to wait ≥500ms
 		// even with zero async activity, capping throughput at ~2 ops/s).
+		//
+		// setInterval (recurring) timers are deliberately excluded: they never
+		// settle, so counting them kept hasAsync true forever and forced the 30s
+		// timeout. A real browser returns from eval immediately when only a
+		// setInterval is registered — e.g. `setInterval(fn,1000); 'hello'` must
+		// return 'hello' at once, not hang for 30s.
 		deadline := time.Now().Add(timeout)
 		for {
 			s.timers.DrainCallbacks() // Bug 2 fix
@@ -342,7 +349,7 @@ func (s *Session) EvalAwait(code string, timeout time.Duration) (string, error) 
 			s.ctx.PerformMicrotaskCheckpoint()
 			pending, perr := s.ctx.RunScript("typeof __besPendingXHR !== 'undefined' ? __besPendingXHR : 0", "xhr-pending-check.js")
 			xhrBusy := perr == nil && pending != nil && pending.String() != "0"
-			hasAsync := xhrBusy || s.timers.PendingCallbacks() > 0 || s.timers.PendingTimers() > 0
+			hasAsync := xhrBusy || s.timers.PendingCallbacks() > 0 || s.timers.PendingOneShotTimers() > 0
 			if !hasAsync {
 				break
 			}

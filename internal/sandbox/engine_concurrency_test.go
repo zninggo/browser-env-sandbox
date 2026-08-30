@@ -181,3 +181,61 @@ func TestEvalAwaitTimeoutTerminates(t *testing.T) {
 		t.Fatal("expected non-empty timeout error")
 	}
 }
+
+// TestEvalAwaitSetIntervalReturnsImmediately guards the setInterval deadlock
+// fix (setinterval-deadlock). Before the fix, registering a recurring setInterval pinned
+// PendingTimers() > 0 forever, so the non-Promise drain loop never exited and
+// EvalAwait hit the 30s timeout via TerminateExecution. A real browser returns
+// from eval at once when only a setInterval is registered; BES must match that.
+// The eval must return the synchronous value 'hello' well under the 30s guard
+// (and under a tight 2s bound that a healthy drain clears in milliseconds).
+func TestEvalAwaitSetIntervalReturnsImmediately(t *testing.T) {
+	sess := newTestSession(t)
+	defer sess.Dispose()
+
+	start := time.Now()
+	got, err := sess.EvalAwait(`setInterval(function(){}, 1000); 'hello'`, 30*time.Second)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("EvalAwait setInterval failed: %v", err)
+	}
+	if got != "hello" {
+		t.Fatalf("EvalAwait result = %q, want %q", got, "hello")
+	}
+	// A healthy drain with only a recurring timer pending returns in
+	// milliseconds. 2s leaves headroom for CI jitter while still proving the
+	// 30s deadlock is gone.
+	if elapsed > 2*time.Second {
+		t.Fatalf("EvalAwait with setInterval took %v, want <2s (30s deadlock regression)", elapsed)
+	}
+}
+
+// TestEvalAwaitSetIntervalWithSettleableWork still drains settle-able work
+// alongside an active setInterval: a one-shot setTimeout that pushes a value
+// into a global must still fire and be observed, while the recurring setInterval
+// does not pin the drain. This guards that excluding setInterval from the
+// drain-exit condition did not also drop genuine one-shot settlement.
+func TestEvalAwaitSetIntervalWithSettleableWork(t *testing.T) {
+	sess := newTestSession(t)
+	defer sess.Dispose()
+
+	got, err := sess.EvalAwait(
+		`setInterval(function(){}, 1000); setTimeout(function(){ globalThis.__hit = 'fired' }, 20); 'ok'`,
+		5*time.Second)
+	if err != nil {
+		t.Fatalf("EvalAwait failed: %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("EvalAwait result = %q, want %q", got, "ok")
+	}
+	// The one-shot setTimeout(20) should have fired during the drain and
+	// written the global. Eval returns 'ok' (the sync value), but the side
+	// effect must be visible.
+	hit, err := sess.EvalAwait(`globalThis.__hit || 'miss'`, time.Second)
+	if err != nil {
+		t.Fatalf("EvalAwait __hit check failed: %v", err)
+	}
+	if hit != "fired" {
+		t.Fatalf("one-shot setTimeout did not fire during drain; __hit = %q", hit)
+	}
+}
