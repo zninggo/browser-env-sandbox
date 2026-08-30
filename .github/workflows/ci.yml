@@ -6,11 +6,20 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  GOPRIVATE: github.com/zninggo/v8go
+  GOSUMDB: off
+  GONOSUMCHECK: github.com/zninggo/v8go
+  CGO_LDFLAGS_ALLOW: "-fuse-ld=.*"
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install lld
+        run: sudo apt-get update && sudo apt-get install -y lld
 
       - uses: actions/setup-go@v5
         with:
