@@ -88,6 +88,22 @@ func (b *consoleBroadcaster) subscribe() (<-chan ConsoleMessage, func()) {
 	return ch, unsub
 }
 
+// closeAll drops every subscriber and closes its channel. It is called when a
+// session is reclaimed by cleanupIdle so that SSE goroutines still blocked in
+// their receive select see ok=false and exit instead of leaking (spinning on
+// a 15s keepalive ticker against a session whose broadcaster will never emit
+// again). Safe to call concurrently with a subscriber's unsub: both take the
+// write lock, and unsub is idempotent (it checks subs membership before
+// closing), so a channel closed here is not re-closed by a later unsub.
+func (b *consoleBroadcaster) closeAll() {
+	b.mu.Lock()
+	for ch := range b.subs {
+		delete(b.subs, ch)
+		close(ch)
+	}
+	b.mu.Unlock()
+}
+
 // networkBroadcaster fans captured network events out to SSE subscribers.
 // One instance per session. Not yet fed by the sandbox (see NetworkEvent note).
 type networkBroadcaster struct {
@@ -126,6 +142,18 @@ func (b *networkBroadcaster) subscribe() (<-chan NetworkEvent, func()) {
 		b.mu.Unlock()
 	}
 	return ch, unsub
+}
+
+// closeAll mirrors consoleBroadcaster.closeAll: reclaims all subscribers when
+// the owning session is idle-reaped so SSE goroutines exit. See that method's
+// comment for the concurrency/idempotency rationale.
+func (b *networkBroadcaster) closeAll() {
+	b.mu.Lock()
+	for ch := range b.subs {
+		delete(b.subs, ch)
+		close(ch)
+	}
+	b.mu.Unlock()
 }
 
 // SessionSummary is a lightweight session listing entry.
@@ -189,21 +217,32 @@ func (s *Service) cleanupIdle() {
 		case <-ticker.C:
 			s.mu.Lock()
 			now := time.Now()
-			var toDispose []*sandbox.Session
+			type reclaimed struct {
+				sess    *sandbox.Session
+				console *consoleBroadcaster
+				network *networkBroadcaster
+			}
+			var toReclaim []reclaimed
 			for id, e := range s.sessions {
 				if now.Sub(e.lastActive) > s.idleTimeout {
 					e.closing = true
 					delete(s.sessions, id)
-					toDispose = append(toDispose, e.sess)
+					toReclaim = append(toReclaim, reclaimed{sess: e.sess, console: e.console, network: e.network})
 				}
 			}
 			s.mu.Unlock()
-			// Dispose outside the lock: Dispose can block on execWG (in-flight
-			// EvalAwait goroutines that acquired the entry before closing was
-			// set), and Dispose itself is safe to run concurrently with a
-			// release() that only touches refCount.
-			for _, sess := range toDispose {
-				sess.Dispose()
+			// Close the SSE broadcasters BEFORE disposing the session. A session
+			// reclaimed here may still have an open SSE subscriber whose
+			// goroutine is blocked in its receive select; closing the channel
+			// makes that goroutine see ok=false and exit, instead of spinning
+			// on keepalive ticks forever against a dead session (goroutine +
+			// memory leak). Done outside s.mu: closeAll takes each broadcaster's
+			// own lock, never s.mu, so no nesting. Idempotent vs a concurrent
+			// client-disconnect unsub (both check subs membership before close).
+			for _, r := range toReclaim {
+				r.console.closeAll()
+				r.network.closeAll()
+				r.sess.Dispose()
 			}
 		}
 	}
@@ -281,15 +320,34 @@ func (s *Service) getEntry(id string) (*sessionEntry, bool) {
 }
 
 // ListSessions returns a summary of all live sessions.
+//
+// It snapshots the session entries under s.mu.RLock and releases the lock
+// before calling GetFingerprint on each. Holding the read lock across N
+// GetFingerprint calls serialized against CreateSession/CloseSession/
+// cleanupIdle write locks — with many sessions the lock-hold × N blocked new
+// session creation. GetFingerprint is internally locked on the per-session
+// mutex and returns a pointer-replaced snapshot, so reading it after the
+// service lock is released is safe (a concurrent SwapFingerprint swaps the
+// whole pointer; a concurrent CloseSession/Dispose leaves the last fp pointer
+// valid — GetFingerprint reads only the pointer, never the V8 context).
 func (s *Service) ListSessions() []SessionSummary {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]SessionSummary, 0, len(s.sessions))
+	type entrySnap struct {
+		id   string
+		sess *sandbox.Session
+	}
+	snaps := make([]entrySnap, 0, len(s.sessions))
 	for _, e := range s.sessions {
-		fp := e.sess.GetFingerprint()
+		snaps = append(snaps, entrySnap{id: e.sess.ID, sess: e.sess})
+	}
+	s.mu.RUnlock()
+
+	out := make([]SessionSummary, 0, len(snaps))
+	for _, sn := range snaps {
+		fp := sn.sess.GetFingerprint()
 		ua, _ := fp.Navigator["userAgent"].(string)
 		out = append(out, SessionSummary{
-			SessionID: e.sess.ID,
+			SessionID: sn.id,
 			Browser:   fp.Browser.Name + " " + fp.Browser.Version,
 			UA:        ua,
 		})
@@ -387,6 +445,16 @@ func (s *Service) CloseSession(id string) error {
 	e.closing = true
 	delete(s.sessions, id)
 	s.mu.Unlock()
+	// Close the SSE broadcasters BEFORE disposing, same as cleanupIdle. A
+	// client-initiated CloseSession can land while an SSE subscriber is still
+	// open on this session; without closing the broadcasters that SSE goroutine
+	// would keep spinning on keepalive ticks against a disposed session
+	// (goroutine + memory leak). closeAll is idempotent vs a concurrent
+	// client-disconnect unsub (both check subs membership before close), so the
+	// two close paths — CloseSession here and the subscriber's own unsub on
+	// disconnect — cannot double-close and panic.
+	e.console.closeAll()
+	e.network.closeAll()
 	e.sess.Dispose()
 	return nil
 }

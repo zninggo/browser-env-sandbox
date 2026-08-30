@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -63,8 +62,13 @@ func (s *CDPServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[cdp] client connected from %s (target=%s)", conn.RemoteAddr(), targetID)
 
+	// One buffered reader/writer per connection, reused across frames. The
+	// handshake bytes were already consumed from bufrw by the http server, so
+	// seed the reader/writer on the raw conn from here on.
 	client := &CDPClient{
 		conn:     conn,
+		br:       bufio.NewReader(conn),
+		bw:       bufio.NewWriter(conn),
 		requests: make(chan CDPRequest, 100),
 		targetID: targetID,
 	}
@@ -80,7 +84,7 @@ func (s *CDPServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Read loop
 	go func() {
 		for {
-			req, err := readWebSocketFrame(conn)
+			req, err := client.readFrame()
 			if err != nil {
 				if err != io.EOF {
 					log.Printf("[cdp] read error: %v", err)
@@ -100,7 +104,7 @@ func (s *CDPServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	for req := range client.requests {
 		resp := s.handleCDPRequest(client, req)
 		data, _ := json.Marshal(resp)
-		if err := writeWebSocketFrame(conn, data); err != nil {
+		if err := client.writeFrame(data); err != nil {
 			log.Printf("[cdp] write error: %v", err)
 			return
 		}
@@ -175,6 +179,7 @@ func (s *CDPServer) handleConsole(req CDPRequest) CDPResponse {
 // breakpoint URL+line matches a script being evaluated, the bridge Eval path
 // can inject a console.trace to surface the hit.
 type debuggerState struct {
+	mu                  sync.Mutex
 	enabled             bool
 	breakpoints         map[string]breakpoint // breakpointId → breakpoint
 	pauseOnExceptions   string                // "none" | "uncaught" | "all"
@@ -190,10 +195,24 @@ type breakpoint struct {
 }
 
 func (s *CDPServer) handleDebugger(req CDPRequest) CDPResponse {
+	// Lazy-init the shared debugger state under s.mu. Multiple CDP clients
+	// share one CDPServer and its single dbgState, and their read loops run as
+	// independent goroutines — the old `if s.dbgState == nil` check was a
+	// read-without-lock that raced a concurrent first init. s.mu is the
+	// server's existing client-map lock; we hold it only long enough to read
+	// or create the pointer, then drop it before taking dbg.mu, so the two
+	// locks are never nested (and dbg.mu never nests the per-client write
+	// frame lock either — writeFrame runs in the process loop after this
+	// returns, with dbg.mu already released).
+	s.mu.Lock()
 	if s.dbgState == nil {
 		s.dbgState = &debuggerState{breakpoints: make(map[string]breakpoint)}
 	}
 	dbg := s.dbgState
+	s.mu.Unlock()
+
+	dbg.mu.Lock()
+	defer dbg.mu.Unlock()
 	switch req.Method {
 	case "Debugger.enable":
 		dbg.enabled = true
@@ -268,10 +287,21 @@ func (s *CDPServer) handlePage(req CDPRequest) CDPResponse {
 
 // --- WebSocket frame helpers (RFC 6455) ---
 
-var wsMutex sync.Mutex
+// maxFrameSize bounds a single inbound frame's payload allocation. A CDP
+// client controls the 64-bit length field; without a cap a malicious or buggy
+// client can request a multi-GB allocation and exhaust memory in one frame.
+// 16 MiB is far above any legitimate CDP message (Runtime.evaluate payloads
+// are KB-scale), so rejecting above this protects the host without affecting
+// real DevTools traffic.
+const maxFrameSize = 16 * 1024 * 1024
 
-func readWebSocketFrame(conn net.Conn) ([]byte, error) {
-	reader := bufio.NewReader(conn)
+// readFrame reads one WebSocket frame off the connection using the client's
+// reused bufio.Reader. Reusing the reader avoids a 4 KiB allocation per frame
+// and — more importantly — keeps any buffered lookahead bytes inside the same
+// reader instance so they are not lost between frames (a fresh reader each
+// call would discard unclaimed buffered bytes, corrupting the stream).
+func (c *CDPClient) readFrame() ([]byte, error) {
+	reader := c.br
 
 	// Read frame header
 	firstByte, err := reader.ReadByte()
@@ -302,6 +332,13 @@ func readWebSocketFrame(conn net.Conn) ([]byte, error) {
 		length = int64(binary.BigEndian.Uint64(len64[:]))
 	}
 
+	if length > maxFrameSize {
+		// Don't attempt to drain the oversized payload — close the connection
+		// so the client cannot keep the reader busy with junk. Returning an
+		// error tears down the read loop and the deferred conn.Close follows.
+		return nil, fmt.Errorf("cdp: frame too large (%d bytes, max %d)", length, maxFrameSize)
+	}
+
 	var maskKey [4]byte
 	if masked {
 		if _, err := io.ReadFull(reader, maskKey[:]); err != nil {
@@ -328,11 +365,15 @@ func readWebSocketFrame(conn net.Conn) ([]byte, error) {
 	return payload, nil
 }
 
-func writeWebSocketFrame(conn net.Conn, data []byte) error {
-	wsMutex.Lock()
-	defer wsMutex.Unlock()
+// writeFrame writes one WebSocket text frame. The per-client mutex serializes
+// writes to THIS connection only — multiple CDP clients no longer contend on a
+// single global lock, so one slow client's write cannot head-of-line block
+// another's. The reused bufio.Writer avoids a per-frame allocation.
+func (c *CDPClient) writeFrame(data []byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	writer := bufio.NewWriter(conn)
+	writer := c.bw
 
 	// Text frame, FIN=1
 	writer.WriteByte(0x82)

@@ -3,6 +3,7 @@
 package debug
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -134,7 +135,9 @@ func (s *CDPServer) handleProtocol(w http.ResponseWriter, r *http.Request) {
 // CDPClient represents a connected DevTools client.
 type CDPClient struct {
 	conn     net.Conn
-	mu       sync.Mutex
+	mu       sync.Mutex // protects conn writes (per-client write-frame lock) — see writeFrame
+	br       *bufio.Reader
+	bw       *bufio.Writer
 	requests chan CDPRequest
 	targetID string // sandbox session this client attaches to
 }
