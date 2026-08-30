@@ -42,7 +42,7 @@ curl -X POST http://localhost:19821/api/session \
 # → {"session_id":"sess-xxx","fingerprint":{...}}
 ```
 
-创建时自动加载 env_shim（navigator/window/document/canvas/WebGL 等 863 个全局构造函数）。
+创建时自动加载 env_shim（navigator/window/document/canvas/WebGL 等 883 个全局构造函数，去重）。
 
 可选字段：
 - `browser` / `os` — 指纹平台（chrome/windows、chrome/macos 等）
@@ -85,6 +85,8 @@ curl -X POST http://localhost:19821/api/session/sess-xxx/call \
   -d '{"function":"add","args":["1","2"]}'
 # → {"result":"3"}
 ```
+
+> **`/call` 字段陷阱**：JSON 字段名必须是 `function`（不是 `call`、`function_name` 或 `name`）。漏传或误写字段名时服务端**不会报错**，而是静默调用一个空名函数返回空结果。`args` 只接受字符串数组，数字参数需先转字符串（如 `"42"` 而非 `42`）。若需执行任意 JS（含函数调用），用 `/eval` 的 `{"code":"..."}` 更直接——`/call` 适合按名调用已加载的全局函数。
 
 ### 5. Cookie 管理
 
@@ -161,9 +163,10 @@ sig = bes_api(f"/api/session/{sid}/eval",
 ## 七、验证指纹
 
 ```bash
-# 用 bes netlayer 客户端访问 tls.peet.ws
-go run ./cmd/h2probe  # （需自建探针）
-# 或用 curl_cffi（Python，走相同指纹）
+# 用 bes netlayer 客户端访问 tls.peet.ws（编程调用，无独立探针二进制）
+# 参考“四、TLS / HTTP/2 指纹层（Go SDK）”的 netlayer.NewUTLSClient("chrome") + client.Request(...)
+# 指纹常量来源：internal/netlayer/h2client.go、tls_spec.go（从真实 Chromium 151 采集）
+# 或用 curl_cffi（Python，第三方 pip 包，走相同指纹）
 python3 -c "
 from curl_cffi import requests
 r = requests.get('https://tls.peet.ws/api/all', impersonate='chrome')

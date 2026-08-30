@@ -136,11 +136,16 @@ func LookupCanvasDataset(key string) string {
 
 // ReloadCanvasDataset forces a reload (used after `bes update-fp`).
 //
-// Race-free by construction: it (1) clears the published snapshot so the next
-// Load re-reads the file, and (2) swaps in a fresh sync.Once so the new
-// generation coordinates its own first loader. A concurrent Do on the *old*
-// Once keeps using the old (now-cleared) snapshot pointer, which is safe
-// because it only reads the atomic Pointer — it never mutates a live snapshot.
+// The swap is two non-atomic steps: (1) clear the published snapshot, then
+// (2) install a fresh sync.Once so the new generation coordinates its own
+// first loader. Between the two steps there is a brief window where the
+// snapshot is nil. A concurrent Load sharing the *old* Once (already Do'd,
+// so it will not re-run the loader func) would observe nil there even though
+// the file exists. loadSnapshot closes that window with a trailing fallback
+// that re-reads the file directly instead of returning nil, so callers never
+// see a spurious nil. A concurrent Do on the old Once only reads the atomic
+// Pointer — it never mutates a live snapshot — so the two-step swap is safe
+// once the fallback is in place.
 func ReloadCanvasDataset() (CanvasDataset, error) {
 	canvasDatasetState.Store(nil)
 	canvasDatasetLoader.Store(&sync.Once{})
