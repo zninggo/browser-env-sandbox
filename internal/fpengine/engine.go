@@ -28,11 +28,6 @@ func New() *Engine {
 	return &Engine{kb: DefaultKnowledgeBase()}
 }
 
-// NewWithKB creates an engine with a custom knowledge base.
-func NewWithKB(kb *KnowledgeBase) *Engine {
-	return &Engine{kb: kb}
-}
-
 // Generate produces a self-consistent fingerprint.
 // If seed is 0, a random seed is used.
 // opts constrains the browser/OS if non-empty.
