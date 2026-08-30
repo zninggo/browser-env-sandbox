@@ -105,7 +105,7 @@ curl -X POST http://localhost:19821/api/session/sess-xxx/cookies \
 bes 内置 Chrome 精确指纹的 HTTP 客户端（`internal/netlayer`）：
 
 ```go
-import "github.com/zninggo/bes/internal/netlayer"
+import "github.com/zninggo/browser-env-sandbox/internal/netlayer"
 
 client := netlayer.NewUTLSClient("chrome")
 client.SetTimeout(30 * time.Second)
