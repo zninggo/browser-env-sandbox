@@ -1,0 +1,3 @@
+# preload scripts directory
+# Files placed here may be loaded by name via the session preload API.
+# Only paths inside this directory are accepted; traversal is rejected.

@@ -7,12 +7,18 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/zninggo/bes/internal/captcha"
 	"github.com/zninggo/bes/internal/session"
 	"github.com/zninggo/bes/pkg/api"
 )
+
+// preloadDir 是 preload 脚本唯一允许的根目录（相对工作目录）。客户端传入的
+// preload 名必须解析到该目录子树内，禁止绝对路径/盘符/UNC/.. 穿越。
+const preloadDir = "data/preload"
 
 // Server is the JSON-over-HTTP API server. It replaces the originally planned
 // gRPC server with a lightweight net/http + encoding/json implementation that
@@ -176,6 +182,40 @@ func readJSON(r *http.Request, dst any) error {
 	return dec.Decode(dst)
 }
 
+// resolvePreloadPath 把客户端提供的 preload 名解析到 preloadDir 子树内，
+// 拒绝绝对路径、Windows 盘符、UNC 前缀及 .. 穿越（防任意文件读取）。
+// 反斜杠统一归一化为正斜杠后再判，确保 Linux 部署也能拦 Windows 风格穿越。
+func resolvePreloadPath(name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("empty preload name")
+	}
+	slash := strings.ReplaceAll(name, "\\", "/")
+	slash = filepath.ToSlash(slash)
+	if filepath.IsAbs(name) || strings.HasPrefix(slash, "/") {
+		return "", fmt.Errorf("absolute path not allowed")
+	}
+	if len(slash) >= 2 && slash[1] == ':' {
+		return "", fmt.Errorf("drive letter not allowed")
+	}
+	if strings.HasPrefix(slash, "//") {
+		return "", fmt.Errorf("unc path not allowed")
+	}
+	cleaned := filepath.Clean(slash)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("path traversal not allowed")
+	}
+	abs := filepath.Join(preloadDir, cleaned)
+	rel, err := filepath.Rel(preloadDir, abs)
+	if err != nil {
+		return "", err
+	}
+	relSlash := filepath.ToSlash(rel)
+	if relSlash == ".." || strings.HasPrefix(relSlash, "../") {
+		return "", fmt.Errorf("path traversal not allowed")
+	}
+	return abs, nil
+}
+
 // writeSSE writes one SSE event: `event: <name>\ndata: <data>\n\n` and flushes.
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, name, data string) {
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, data)
@@ -238,7 +278,13 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	// Preload scripts and run init code if specified
 	if len(req.Preload) > 0 {
 		for _, scriptPath := range req.Preload {
-			content, err := os.ReadFile(scriptPath)
+			resolved, err := resolvePreloadPath(scriptPath)
+			if err != nil {
+				s.svc.CloseSession(id)
+				writeError(w, http.StatusBadRequest, "preload "+scriptPath+": "+err.Error())
+				return
+			}
+			content, err := os.ReadFile(resolved)
 			if err != nil {
 				s.svc.CloseSession(id)
 				writeError(w, http.StatusInternalServerError, "preload read "+scriptPath+": "+err.Error())
