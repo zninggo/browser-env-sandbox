@@ -256,6 +256,15 @@ func (tm *TimerManager) Flush(timeout time.Duration) error {
 }
 
 // StopAll cancels all active timers.
+//
+// It also drains the callback queue: callbacks already queued by worker pumps
+// and websocket read loops (each a scheduleTimer(0) closure capturing the
+// parent V8 context) are dropped rather than executed. Executing them after
+// StopAll would mean RunScript on a context Dispose is about to (or already
+// has) closed — a use-after-dispose — and the closures hold references to the
+// context/isolate that would otherwise keep them from being garbage collected.
+// Dropping is safe because a stopped session will never run an EvalAwait drain
+// again, so those callbacks have no meaningful audience.
 func (tm *TimerManager) StopAll() {
 	tm.mu.Lock()
 	tm.stopped = true
@@ -264,5 +273,16 @@ func (tm *TimerManager) StopAll() {
 		close(entry.stop)
 	}
 	tm.timers = make(map[int32]*timerEntry)
+	// Drain any callbacks already queued (drop without executing). Holding tm.mu
+	// here is fine: we only receive from the channel, we do not invoke the
+	// callbacks, so there is no re-entry into TimerManager.
+	for {
+		select {
+		case <-tm.callbackQueue:
+		default:
+			goto drained
+		}
+	}
+drained:
 	tm.mu.Unlock()
 }

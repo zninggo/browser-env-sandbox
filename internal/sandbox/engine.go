@@ -456,8 +456,26 @@ func (s *Session) DrainWorkerCallbacks(wait time.Duration) {
 }
 
 // GetFingerprint returns the session's fingerprint.
+//
+// Reads s.fp under s.mu's read lock so it cannot race a concurrent
+// SwapFingerprint (which writes s.fp under s.mu). SwapFingerprint replaces the
+// whole pointer rather than mutating the Fingerprint in place, so the snapshot
+// returned here stays valid even after the lock is released — readers see a
+// consistent point-in-time identity.
 func (s *Session) GetFingerprint() *api.Fingerprint {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.fp
+}
+
+// IsDisposed reports whether Dispose has flipped the session's disposed flag.
+// Sub-resources (worker pumps, websocket bridges) consult this before touching
+// the parent V8 context from a queued callback, so a callback drained after
+// Dispose can bail out instead of RunScript-ing a closed context.
+func (s *Session) IsDisposed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.disposed
 }
 
 // SwapFingerprint hot-swaps the session's fingerprint without rebuilding the

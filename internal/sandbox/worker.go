@@ -97,6 +97,7 @@ type Worker struct {
 	outbound   chan string   // worker → parent queue (JSON envelopes)
 	stop       chan struct{} // closed by terminate()
 	loopDone   chan struct{} // closed by workerLoop on exit
+	pumpDone   chan struct{} // closed by startParentPump's goroutine on exit
 	terminated chan struct{} // closed by terminate() after full teardown
 	once       sync.Once
 }
@@ -119,6 +120,7 @@ func StartWorker(source string, parentTimers *TimerManager, console ConsoleSink,
 		outbound:   make(chan string, 64),
 		stop:       make(chan struct{}),
 		loopDone:   make(chan struct{}),
+		pumpDone:   make(chan struct{}),
 		terminated: make(chan struct{}),
 	}
 
@@ -249,7 +251,10 @@ func (w *Worker) global() *v8go.Object {
 
 // terminate stops the worker loop, waits for it to exit, then disposes the
 // isolate. Idempotent. Disposing while the loop is inside a V8 call is a
-// use-after-free, so the wait is mandatory.
+// use-after-free, so the wait is mandatory. It also waits for the parent pump
+// goroutine to exit so no further worker→parent callbacks can be queued after
+// teardown begins — Dispose's StopAll drains the queue, but stopping the pump
+// first is what guarantees nothing new lands in it.
 func (w *Worker) terminate() {
 	w.once.Do(func() {
 		close(w.stop)
@@ -263,6 +268,13 @@ func (w *Worker) terminate() {
 		case <-w.loopDone:
 		case <-time.After(2 * time.Second):
 			log.Printf("[sandbox] worker %d loop did not exit within 2s; disposing anyway", w.id)
+		}
+		// Wait for the parent pump to exit so it cannot queue any more
+		// callbacks onto the parent timer manager after this point.
+		select {
+		case <-w.pumpDone:
+		case <-time.After(2 * time.Second):
+			log.Printf("[sandbox] worker %d parent pump did not exit within 2s; disposing anyway", w.id)
 		}
 		w.iso.Dispose()
 		close(w.terminated)
@@ -422,7 +434,7 @@ func injectWorkerConstructor(p *PostContextBuilder, sess *Session) {
 			return v
 		}
 		id := sess.workers.register(w)
-		w.startParentPump(parentTimers, p.ctx)
+		w.startParentPump(parentTimers, p.ctx, sess)
 		v, _ := v8go.NewValue(iso, id)
 		return v
 	}
@@ -550,9 +562,17 @@ func injectWorkerConstructor(p *PostContextBuilder, sess *Session) {
 // envelope becomes a timer-queue callback carrying the parent context, and
 // that callback executes during EvalAwait's drain on the parent isolate
 // thread.
-func (w *Worker) startParentPump(parentTimers *TimerManager, parentCtx *v8go.Context) {
+//
+// The callback checks parent.IsDisposed() before RunScript: a callback queued
+// just before Dispose can be drained after the parent context is closed, so
+// without the guard it would RunScript a closed context (use-after-dispose).
+// StopAll draining the queue (H9) drops most of these, but a callback can also
+// fire on a still-live drain before Dispose reaches StopAll — the disposed
+// check closes that window too. parent must be the owning *Session.
+func (w *Worker) startParentPump(parentTimers *TimerManager, parentCtx *v8go.Context, parent *Session) {
 	wRef := w
 	go func() {
+		defer close(wRef.pumpDone)
 		for {
 			select {
 			case <-wRef.stop:
@@ -569,6 +589,9 @@ func (w *Worker) startParentPump(parentTimers *TimerManager, parentCtx *v8go.Con
 				case "message", "error":
 					parentTimers.scheduleTimer(0, false, func() {
 						// Runs on the parent isolate thread via the timer drain.
+						if parent.IsDisposed() {
+							return
+						}
 						payload := "null"
 						if len(msg.Payload) > 0 {
 							payload = string(msg.Payload)

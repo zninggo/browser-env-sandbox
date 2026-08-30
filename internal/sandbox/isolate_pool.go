@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/zninggo/v8go"
 )
@@ -37,9 +38,10 @@ func newIsolateWithLimits() *v8go.Isolate {
 // Creating a new Isolate is expensive; pooling dramatically improves
 // throughput for multi-session workloads.
 type IsolatePool struct {
-	pool chan *v8go.Isolate
-	mu   sync.Mutex
-	size int
+	pool   chan *v8go.Isolate
+	mu     sync.Mutex
+	size   int
+	closed atomic.Bool // set by DisposeAll; Put checks it to avoid returning to a dead pool
 }
 
 // NewIsolatePool creates a pool with the given size.
@@ -62,8 +64,16 @@ func (p *IsolatePool) Get() *v8go.Isolate {
 }
 
 // Put returns an Isolate to the pool for reuse.
-// If the pool is full, the Isolate is disposed.
+// If the pool is full (or the pool has been disposed via DisposeAll), the
+// Isolate is disposed instead of returned. The closed check prevents a session
+// that outlives Engine.Dispose from quietly returning its Isolate to a pool
+// whose channel DisposeAll has already drained — such an Isolate would never be
+// reclaimed (the next DisposeAll is not coming), so it is disposed on the spot.
 func (p *IsolatePool) Put(iso *v8go.Isolate) {
+	if p.closed.Load() {
+		iso.Dispose()
+		return
+	}
 	// TODO: Reset the isolate state before returning to pool.
 	// Currently we just return it as-is; a full reset would require
 	// creating a fresh context anyway, so the benefit is mainly
@@ -77,10 +87,13 @@ func (p *IsolatePool) Put(iso *v8go.Isolate) {
 	}
 }
 
-// DisposeAll disposes all Isolates in the pool.
+// DisposeAll disposes all Isolates in the pool and marks it closed so subsequent
+// Put calls dispose their Isolates on the spot rather than returning them to a
+// dead pool (which would leak — no future DisposeAll would reclaim them).
 func (p *IsolatePool) DisposeAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.closed.Store(true)
 	for {
 		select {
 		case iso := <-p.pool:

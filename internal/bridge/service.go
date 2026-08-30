@@ -140,6 +140,8 @@ type sessionEntry struct {
 	console    *consoleBroadcaster
 	network    *networkBroadcaster
 	lastActive time.Time
+	refCount   int  // in-flight operations holding this entry; CloseSession/cleanupIdle mark closing instead of tearing down under a live ref
+	closing    bool // set when CloseSession/cleanupIdle has claimed the entry; acquire refuses new ops on a closing entry
 }
 
 // Service is the business-logic layer over sandbox.Engine. It owns the session
@@ -187,13 +189,22 @@ func (s *Service) cleanupIdle() {
 		case <-ticker.C:
 			s.mu.Lock()
 			now := time.Now()
+			var toDispose []*sandbox.Session
 			for id, e := range s.sessions {
 				if now.Sub(e.lastActive) > s.idleTimeout {
-					e.sess.Dispose()
+					e.closing = true
 					delete(s.sessions, id)
+					toDispose = append(toDispose, e.sess)
 				}
 			}
 			s.mu.Unlock()
+			// Dispose outside the lock: Dispose can block on execWG (in-flight
+			// EvalAwait goroutines that acquired the entry before closing was
+			// set), and Dispose itself is safe to run concurrently with a
+			// release() that only touches refCount.
+			for _, sess := range toDispose {
+				sess.Dispose()
+			}
 		}
 	}
 }
@@ -229,6 +240,39 @@ func (s *Service) touch(id string) {
 	s.mu.Unlock()
 }
 
+// acquire pins a session entry for the duration of an operation: it bumps the
+// refCount under s.mu so a concurrent CloseSession/cleanupIdle sees a live ref
+// and defers the teardown semantics (it still marks closing + removes the map
+// entry, but the session itself stays usable for the in-flight op via the
+// already-returned pointer). The returned release func drops the ref. A nil
+// entry means the session is gone or already closing — callers must refuse.
+//
+// This closes the TOCTOU window that getEntry had: previously it returned the
+// entry pointer under a read lock, released the lock, and the caller then used
+// e.sess.XXX() while CloseSession could concurrently Dispose+delete the entry.
+// The sandbox layer's disposed/execWG guard already prevents a crash there, but
+// acquire makes the bridge layer's lifecycle explicit and race-testable.
+func (s *Service) acquire(id string) (*sessionEntry, func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.sessions[id]
+	if !ok || e.closing {
+		return nil, nil
+	}
+	e.refCount++
+	e.lastActive = time.Now()
+	return e, func() {
+		s.mu.Lock()
+		e.refCount--
+		s.mu.Unlock()
+	}
+}
+
+// getEntry returns a peek at an entry without pinning it. Used only for paths
+// that read non-V8 state (broadcaster subscription) where the entry pointer
+// itself staying valid is enough; those still pair with acquire where a V8 op
+// follows. Kept for Subscribe*/Publish which operate on the broadcaster, not
+// the V8 context.
 func (s *Service) getEntry(id string) (*sessionEntry, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -256,59 +300,61 @@ func (s *Service) ListSessions() []SessionSummary {
 // Eval executes JavaScript in a session and returns the stringified result.
 // Promise results are awaited (timers + microtasks drained) before returning.
 func (s *Service) Eval(id, code string) (string, error) {
-	s.touch(id)
-	e, ok := s.getEntry(id)
-	if !ok {
+	e, release := s.acquire(id)
+	if e == nil {
 		return "", fmt.Errorf("session not found: %s", id)
 	}
+	defer release()
 	return e.sess.EvalAwait(code, 30*time.Second)
 }
 
 // LoadScript loads and executes a named script in a session.
 func (s *Service) LoadScript(id, name, content string) error {
-	s.touch(id)
-	e, ok := s.getEntry(id)
-	if !ok {
+	e, release := s.acquire(id)
+	if e == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
+	defer release()
 	return e.sess.LoadScript(name, content)
 }
 
 // CallFunction calls a global function by name with string arguments.
 func (s *Service) CallFunction(id, fn string, args []string) (string, error) {
-	s.touch(id)
-	e, ok := s.getEntry(id)
-	if !ok {
+	e, release := s.acquire(id)
+	if e == nil {
 		return "", fmt.Errorf("session not found: %s", id)
 	}
+	defer release()
 	return e.sess.CallFunction(fn, args...)
 }
 
 // GetFingerprint returns a session's full fingerprint.
 func (s *Service) GetFingerprint(id string) (*api.Fingerprint, error) {
-	s.touch(id)
-	e, ok := s.getEntry(id)
-	if !ok {
+	e, release := s.acquire(id)
+	if e == nil {
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
+	defer release()
 	return e.sess.GetFingerprint(), nil
 }
 
 // GetCookies returns a session's cookie jar as "name1=value1; name2=value2".
 func (s *Service) GetCookies(id string) (string, error) {
-	e, ok := s.getEntry(id)
-	if !ok {
+	e, release := s.acquire(id)
+	if e == nil {
 		return "", fmt.Errorf("session not found: %s", id)
 	}
+	defer release()
 	return e.sess.GetCookies(), nil
 }
 
 // SetCookie sets a cookie in a session.
 func (s *Service) SetCookie(id, name, value string) error {
-	e, ok := s.getEntry(id)
-	if !ok {
+	e, release := s.acquire(id)
+	if e == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
+	defer release()
 	e.sess.SetCookie(name, value)
 	return nil
 }
@@ -316,23 +362,32 @@ func (s *Service) SetCookie(id, name, value string) error {
 // SwapFingerprint hot-swaps a session's fingerprint (snapshot/fingerprint
 // hot-swap). Returns the new fingerprint.
 func (s *Service) SwapFingerprint(id string, opts api.SessionOptions) (*api.Fingerprint, error) {
-	e, ok := s.getEntry(id)
-	if !ok {
+	e, release := s.acquire(id)
+	if e == nil {
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
+	defer release()
 	return e.sess.SwapFingerprint(s.engine, opts)
 }
 
 // CloseSession disposes a session and removes it from the registry.
+//
+// It marks the entry closing and removes it from the map under s.mu, then
+// disposes the session outside the lock. In-flight ops that acquired the entry
+// before closing was set still hold a live ref and a valid session pointer;
+// the sandbox layer's disposed/execWG guard handles their teardown. New ops
+// arriving after closing see the entry gone (or closing) and refuse.
 func (s *Service) CloseSession(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	e, ok := s.sessions[id]
 	if !ok {
+		s.mu.Unlock()
 		return fmt.Errorf("session not found: %s", id)
 	}
-	e.sess.Dispose()
+	e.closing = true
 	delete(s.sessions, id)
+	s.mu.Unlock()
+	e.sess.Dispose()
 	return nil
 }
 
@@ -379,10 +434,11 @@ func (s *Service) PublishNetworkEvent(id string, evt NetworkEvent) {
 // proxy + location) into the profile store. name overrides the profile name;
 // empty defaults to the session ID.
 func (s *Service) SaveProfile(id, name string) (*session.Profile, error) {
-	e, ok := s.getEntry(id)
-	if !ok {
+	e, release := s.acquire(id)
+	if e == nil {
 		return nil, fmt.Errorf("session not found: %s", id)
 	}
+	defer release()
 	if name == "" {
 		name = id
 	}

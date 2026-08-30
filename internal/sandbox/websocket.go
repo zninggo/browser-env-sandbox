@@ -400,6 +400,7 @@ type wsBridge struct {
 	conn     *wsConn
 	timers   *TimerManager
 	ctx      *v8go.Context
+	parent   *Session // owning session; callbacks check IsDisposed() before touching ctx
 	sendCh   chan wsSendMsg
 	stop     chan struct{}
 	loopDone chan struct{}
@@ -408,7 +409,7 @@ type wsBridge struct {
 }
 
 // startWSBridge dials the WebSocket and starts the read/write loops.
-func startWSBridge(rawURL string, protocols []string, timers *TimerManager, ctx *v8go.Context) (*wsBridge, error) {
+func startWSBridge(rawURL string, protocols []string, timers *TimerManager, ctx *v8go.Context, parent *Session) (*wsBridge, error) {
 	conn, err := wsDial(rawURL, protocols, nil)
 	if err != nil {
 		return nil, err
@@ -417,6 +418,7 @@ func startWSBridge(rawURL string, protocols []string, timers *TimerManager, ctx 
 		conn:     conn,
 		timers:   timers,
 		ctx:      ctx,
+		parent:   parent,
 		sendCh:   make(chan wsSendMsg, 64),
 		stop:     make(chan struct{}),
 		loopDone: make(chan struct{}),
@@ -434,12 +436,22 @@ func startWSBridge(rawURL string, protocols []string, timers *TimerManager, ctx 
 
 // scheduleEvent queues a callback on the isolate thread that calls
 // __besWebSocketOnOpen/OnMessage/OnClose/OnError. Must NOT touch V8 here.
+//
+// The callback checks parent.IsDisposed() before RunScript: a frame read just
+// before Dispose can queue a callback that drains after the parent context is
+// closed, so without the guard it would RunScript a closed context
+// (use-after-dispose). StopAll draining the queue (H9) drops most of these;
+// the disposed check covers a callback firing on a live drain before Dispose
+// reaches StopAll.
 func (w *wsBridge) scheduleEvent(eventType, data string) {
 	wRef := w
 	et := eventType
 	d := data
 	wRef.timers.scheduleTimer(0, false, func() {
 		wID := wRef.id // read at execution time (register sets it after startWSBridge returns)
+		if wRef.parent.IsDisposed() {
+			return
+		}
 		var call string
 		switch et {
 		case "open":
@@ -558,7 +570,7 @@ func injectWebSocketConstructor(p *PostContextBuilder, sess *Session) {
 		// Dial synchronously — if it fails immediately, return -1 so JS fires
 		// onerror. The dial is a blocking TCP connect + handshake (fast for
 		// local echo; for remote wss it may take a moment).
-		w, err := startWSBridge(rawURL, protocols, parentTimers, ctx)
+		w, err := startWSBridge(rawURL, protocols, parentTimers, ctx, sess)
 		if err != nil {
 			log.Printf("[sandbox] ws create failed: %v", err)
 			v, _ := v8go.NewValue(iso, int32(-1))
@@ -617,11 +629,16 @@ func injectWebSocketConstructor(p *PostContextBuilder, sess *Session) {
 				// thread (closeCb runs during DrainCallbacks → onmessage →
 				// ws.close() → __besWebSocketClose). Using scheduleTimer here
 				// would race with DrainCallbacks's non-blocking drain.
-				call := fmt.Sprintf(
-					"typeof __besWebSocketOnClose==='function'&&__besWebSocketOnClose(%d,%d,%s)",
-					id, code, jsonString(reason))
-				if _, err := ctx.RunScript(call, "ws-close-event.js"); err != nil {
-					log.Printf("[sandbox] ws %d close event error: %v", id, err)
+				// Guard against a closed parent context: closeCb can run during
+				// a drain that overlaps Dispose, so check IsDisposed before
+				// RunScript to avoid a use-after-dispose on the parent ctx.
+				if !sess.IsDisposed() {
+					call := fmt.Sprintf(
+						"typeof __besWebSocketOnClose==='function'&&__besWebSocketOnClose(%d,%d,%s)",
+						id, code, jsonString(reason))
+					if _, err := ctx.RunScript(call, "ws-close-event.js"); err != nil {
+						log.Printf("[sandbox] ws %d close event error: %v", id, err)
+					}
 				}
 				// Send the close frame and tear down asynchronously.
 				w.conn.sendClose(code, reason)
