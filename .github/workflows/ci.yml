@@ -19,7 +19,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install lld
-        run: sudo apt-get update && sudo apt-get install -y lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld-19
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-19 50
+          ld.lld --version
 
       - uses: actions/setup-go@v5
         with:
