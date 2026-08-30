@@ -20,7 +20,7 @@
 
 **Go**
 ```go
-import "github.com/zninggo/bes/sdk/go/bes"
+import "github.com/zninggo/browser-env-sandbox/sdk/go/bes"
 
 // 连接 HTTPS 线上实例
 sandbox := bes.New("https://bes.zsso.de")
