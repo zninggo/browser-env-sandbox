@@ -1,4 +1,4 @@
-module github.com/zninggo/bes
+module github.com/zninggo/browser-env-sandbox
 
 go 1.25.0
 

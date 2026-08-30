@@ -13,8 +13,8 @@ import (
 
 	"github.com/zninggo/v8go"
 
-	"github.com/zninggo/bes/internal/captcha"
-	"github.com/zninggo/bes/pkg/api"
+	"github.com/zninggo/browser-env-sandbox/internal/captcha"
+	"github.com/zninggo/browser-env-sandbox/pkg/api"
 )
 
 // EnvBuilder constructs browser environment objects on the ObjectTemplate

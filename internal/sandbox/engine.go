@@ -16,7 +16,7 @@ import (
 
 	"github.com/zninggo/v8go"
 
-	"github.com/zninggo/bes/pkg/api"
+	"github.com/zninggo/browser-env-sandbox/pkg/api"
 )
 
 // Engine manages V8 Isolates and creates sandbox sessions.

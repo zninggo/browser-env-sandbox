@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/zninggo/bes/pkg/api"
+	"github.com/zninggo/browser-env-sandbox/pkg/api"
 )
 
 // KnowledgeBase holds the browser × OS × GPU × screen × timezone matrix

@@ -7,11 +7,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/zninggo/bes/internal/fpengine"
-	"github.com/zninggo/bes/internal/fpupdate"
-	"github.com/zninggo/bes/internal/mcp"
-	"github.com/zninggo/bes/internal/sandbox"
-	"github.com/zninggo/bes/pkg/api"
+	"github.com/zninggo/browser-env-sandbox/internal/fpengine"
+	"github.com/zninggo/browser-env-sandbox/internal/fpupdate"
+	"github.com/zninggo/browser-env-sandbox/internal/mcp"
+	"github.com/zninggo/browser-env-sandbox/internal/sandbox"
+	"github.com/zninggo/browser-env-sandbox/pkg/api"
 )
 
 func main() {

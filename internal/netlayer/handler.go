@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zninggo/bes/internal/sandbox"
+	"github.com/zninggo/browser-env-sandbox/internal/sandbox"
 )
 
 // Mode determines how network requests are handled.

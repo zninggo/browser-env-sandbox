@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zninggo/bes/internal/fpengine"
-	"github.com/zninggo/bes/pkg/api"
+	"github.com/zninggo/browser-env-sandbox/internal/fpengine"
+	"github.com/zninggo/browser-env-sandbox/pkg/api"
 )
 
 // newTestSession builds a real sandbox session for concurrency tests. The V8

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/zninggo/bes/pkg/api"
+	"github.com/zninggo/browser-env-sandbox/pkg/api"
 )
 
 // Engine generates fingerprints using a knowledge base + seeded RNG.
