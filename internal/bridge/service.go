@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zninggo/bes/internal/sandbox"
-	"github.com/zninggo/bes/internal/session"
-	"github.com/zninggo/bes/pkg/api"
+	"github.com/zninggo/browser-env-sandbox/internal/sandbox"
+	"github.com/zninggo/browser-env-sandbox/internal/session"
+	"github.com/zninggo/browser-env-sandbox/pkg/api"
 )
 
 // ConsoleMessage is a single captured console.* call, ready to stream to a

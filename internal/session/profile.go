@@ -15,8 +15,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/zninggo/bes/internal/fpengine"
-	"github.com/zninggo/bes/pkg/api"
+	"github.com/zninggo/browser-env-sandbox/internal/fpengine"
+	"github.com/zninggo/browser-env-sandbox/pkg/api"
 )
 
 // Profile represents a complete saved browser profile.

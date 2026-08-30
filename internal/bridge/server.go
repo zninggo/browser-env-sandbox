@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zninggo/bes/internal/captcha"
-	"github.com/zninggo/bes/internal/session"
-	"github.com/zninggo/bes/pkg/api"
+	"github.com/zninggo/browser-env-sandbox/internal/captcha"
+	"github.com/zninggo/browser-env-sandbox/internal/session"
+	"github.com/zninggo/browser-env-sandbox/pkg/api"
 )
 
 // preloadDir 是 preload 脚本唯一允许的根目录（相对工作目录）。客户端传入的
