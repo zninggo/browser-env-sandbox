@@ -1,23 +1,31 @@
 # browser-env-sandbox Dockerfile
 # Multi-stage build: build the Go binary, then minimal runtime image
 #
-# NOTE: builder/runtime use Debian trixie (glibc 2.41+). The v8go v0.34
+# NOTE: builder/runtime use Debian trixie (glibc 2.41+). The v8go v0.35.1
 # prebuilt V8 static libraries reference __isoc23_* symbols added in
 # glibc 2.38, which bookworm (2.36) does not provide.
+# v8go v0.35.1 uses V8 15.2 (Clang 19+ CREL relocations), requires lld linker.
 
 # ── Build stage ──
 FROM golang:1.25-trixie AS builder
 
 WORKDIR /build
 
+# Install lld linker (required by v8go v0.35.1 CREL relocations)
+RUN apt-get update && apt-get install -y --no-install-recommends lld && rm -rf /var/lib/apt/lists/*
+
 # Cache deps
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOPRIVATE=github.com/zninggo/v8go GOSUMDB=off GONOSUMCHECK=github.com/zninggo/v8go go mod download
 
 # Copy source
 COPY . .
 
 # Build all binaries
+ENV GOPRIVATE=github.com/zninggo/v8go
+ENV GOSUMDB=off
+ENV GONOSUMCHECK=github.com/zninggo/v8go
+ENV CGO_LDFLAGS_ALLOW="-fuse-ld=.*"
 RUN CGO_ENABLED=1 go build -o /bes ./cmd/bes
 RUN CGO_ENABLED=1 go build -o /bes-server ./cmd/bes-server
 RUN CGO_ENABLED=1 go build -o /bes-selftest ./cmd/bes-selftest
