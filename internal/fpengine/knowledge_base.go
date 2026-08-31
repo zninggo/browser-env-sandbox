@@ -489,7 +489,27 @@ func (kb *KnowledgeBase) LookupCanvasHash(majorVer int, osName, gpuVendor string
 		MeasureText: map[string]float64{
 			"measureText_width": float64(majorVer) * 0.1,
 		},
+		// T1: scene-correlated dataURLs so toDataURL returns different output
+		// for text-only vs geometry-only vs mixed draw histories. Each scene
+		// gets a distinct deterministic PNG (same fingerprint → same scene
+		// value; different scenes → different values). The "empty" scene
+		// reuses the base dataURL so existing no-draw toDataURL assertions
+		// stay green.
+		SceneDataURLs: buildSceneDataURLs(majorVer, osName, gpuVendor, dataURL),
 	}
+}
+
+// buildSceneDataURLs returns per-scene canvas dataURLs (full data: scheme)
+// for the T1 content-correlation fix. "empty" mirrors the base so unchanged
+// draw-less behavior stays backward compatible; the other three scenes are
+// distinct deterministic PNGs keyed off the base seed plus a scene tag.
+func buildSceneDataURLs(majorVer int, osName, gpuVendor, baseDataURL string) map[string]string {
+	full := "data:image/png;base64," + baseDataURL
+	scenes := map[string]string{"empty": full}
+	for _, scene := range []string{"text_only", "geometry_only", "text_and_geometry"} {
+		scenes[scene] = "data:image/png;base64," + syntheticCanvasDataURLScene(majorVer, osName, gpuVendor, scene)
+	}
+	return scenes
 }
 
 // LookupAudioHash returns the AudioContext fingerprint hash for the given
@@ -530,7 +550,19 @@ func (kb *KnowledgeBase) LookupAudioHash(majorVer int, osName string) api.AudioF
 // produces a fully spec-compliant PNG: signature, IHDR, deflate-compressed
 // IDAT, correct CRC32, IEND. png.Decode and zlib readers pass.
 func syntheticCanvasDataURL(majorVer int, osName, gpuVendor string) string {
-	seed := fmt.Sprintf("canvas:%d:%s:%s", majorVer, osName, gpuVendor)
+	return syntheticCanvasDataURLScene(majorVer, osName, gpuVendor, "")
+}
+
+// syntheticCanvasDataURLScene generates a deterministic, decodable PNG for
+// canvas.toDataURL(). The scene tag folds into the seed so different draw
+// histories (text_only / geometry_only / text_and_geometry) yield distinct
+// PNGs — this is the T1 content-correlation fix. An empty scene reproduces
+// the original base output (backward compatible).
+//
+// Output is a spec-compliant PNG (signature, IHDR, deflate IDAT, CRC32,
+// IEND) so png.Decode / zlib integrity checks pass, just like real Chrome.
+func syntheticCanvasDataURLScene(majorVer int, osName, gpuVendor, scene string) string {
+	seed := fmt.Sprintf("canvas:%d:%s:%s:%s", majorVer, osName, gpuVendor, scene)
 	h := sha256.Sum256([]byte(seed))
 
 	// Small canvas (280x60) keeps output within real Chrome's 1-3KB base64

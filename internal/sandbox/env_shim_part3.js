@@ -571,14 +571,50 @@
     this.port2 = port2;
   };
 
-  // ── Canvas 2D getImageData/createImageData fix (Bug 7) ──
+  // ── Canvas 2D / WebGL enhancement ──
   // Go callback can't create JS objects (v8go NewValue only accepts primitives).
-  // Override getContext to wrap the 2d context with JS-side getImageData/createImageData.
+  // Override getContext to wrap the 2d/webgl context with JS-side:
+  //   - getImageData/createImageData (Bug 7)
+  //   - _drawOps tracking + scene-correlated toDataURL (T1)
+  //   - readPixels base64 bridge (T3)
+  //   - prototype-chain instanceof/toString alignment (A-class)
   try {
     var _origCE_canvas = document.createElement;
+    // classifyDrawOps maps a draw-op history to a scene key matching
+    // __besFp.canvas.sceneDataURLs: empty / text_only / geometry_only /
+    // text_and_geometry (T1).
+    function _besClassifyScene(ops) {
+      var hasText = false, hasGeo = false;
+      for (var i = 0; i < ops.length; i++) {
+        if (ops[i] === 'text') hasText = true; else hasGeo = true;
+        if (hasText && hasGeo) break;
+      }
+      if (!hasText && !hasGeo) return 'empty';
+      if (hasText && !hasGeo) return 'text_only';
+      if (!hasText && hasGeo) return 'geometry_only';
+      return 'text_and_geometry';
+    }
     document.createElement = function(tagName) {
       var el = _origCE_canvas.call(document, tagName);
       if (el && typeof tagName === 'string' && tagName.toLowerCase() === 'canvas') {
+        var _besDrawOps = []; // T1 draw history for this canvas element
+        // T1: wrap toDataURL so output correlates with draw history. The Go
+        // callback returns the empty-scene value; we override with the
+        // scene-correlated dataURL from __besFp.canvas.sceneDataURLs.
+        var _origToDataURL = el.toDataURL;
+        if (typeof _origToDataURL === 'function') {
+          el.toDataURL = function() {
+            var scene = _besClassifyScene(_besDrawOps);
+            var fp = (typeof window !== 'undefined' && window.__besFp) || {};
+            var scenes = (fp.canvas && fp.canvas.sceneDataURLs) || {};
+            var v = scenes[scene];
+            if (typeof v !== 'string' || v === '') {
+              v = _origToDataURL.apply(el, arguments);
+            }
+            return v;
+          };
+          try { nativeFns.add(el.toDataURL); } catch(e) {}
+        }
         var _origGC = el.getContext;
         el.getContext = function(type) {
           var ctx = _origGC.call(this, type);
@@ -615,6 +651,71 @@
               return m;
             };
             try { nativeFns.add(ctx.measureText); } catch(e) {}
+            // T1: wrap text/geometry draw methods to record op type. The Go
+            // callbacks already run (and apply T6 renderDelay); we only add
+            // history tracking here, preserving original behavior.
+            var _wrapDraw = function(name, isText) {
+              var orig = ctx[name];
+              if (typeof orig !== 'function') return;
+              ctx[name] = function() {
+                _besDrawOps.push(isText ? 'text' : 'geo');
+                return orig.apply(ctx, arguments);
+              };
+              try { nativeFns.add(ctx[name]); } catch(e) {}
+            };
+            _wrapDraw('fillText', true);
+            _wrapDraw('strokeText', true);
+            _wrapDraw('fillRect', false);
+            _wrapDraw('strokeRect', false);
+            _wrapDraw('arc', false);
+            _wrapDraw('rect', false);
+            _wrapDraw('fill', false);
+            _wrapDraw('stroke', false);
+            _wrapDraw('drawImage', false);
+            // A-class: align CanvasRenderingContext2D prototype so
+            // instanceof / Object.prototype.toString.call(ctx) match a real
+            // browser (env_shim_part5.js defines the constructor).
+            try {
+              if (typeof CanvasRenderingContext2D === 'function') {
+                Object.setPrototypeOf(ctx, CanvasRenderingContext2D.prototype);
+              }
+            } catch(e) {}
+          }
+          if (ctx && typeof type === 'string' && type.indexOf('webgl') === 0) {
+            // T3: readPixels bridge. v8go can't write TypedArray bytes
+            // (constraint 12), so the Go callback returns a base64 string
+            // and we decode it into the caller's dst Uint8Array here.
+            var _origReadPixels = ctx.readPixels;
+            if (typeof _origReadPixels === 'function') {
+              ctx.readPixels = function(x, y, w, h, format, type_, dst) {
+                var fp = (typeof window !== 'undefined' && window.__besFp) || {};
+                var b64 = (fp.webgl && fp.webgl.readPixelsData) || '';
+                if (b64 && dst && typeof dst.length === 'number') {
+                  var bin;
+                  try { bin = atob(b64); } catch(e) { bin = ''; }
+                  var n = Math.min(bin.length, dst.length);
+                  for (var i = 0; i < n; i++) {
+                    dst[i] = bin.charCodeAt(i);
+                  }
+                  // Leave remaining bytes at 0 (caller's TypedArray default).
+                  return;
+                }
+                // Fallback: invoke original (returns base64 string) — no-op
+                // for callers that didn't pass a writable dst.
+                return _origReadPixels.apply(ctx, arguments);
+              };
+              try { nativeFns.add(ctx.readPixels); } catch(e) {}
+            }
+            // A-class: align WebGLRenderingContext prototype so
+            // instanceof / Object.prototype.toString.call(ctx) match a real
+            // browser. WebGL2 ctx aligns to WebGL2RenderingContext when present.
+            try {
+              var RC = (type.indexOf('webgl2') === 0 && typeof WebGL2RenderingContext === 'function')
+                ? WebGL2RenderingContext : WebGLRenderingContext;
+              if (typeof RC === 'function') {
+                Object.setPrototypeOf(ctx, RC.prototype);
+              }
+            } catch(e) {}
           }
           return ctx;
         };

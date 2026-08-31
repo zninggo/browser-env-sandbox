@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/zninggo/v8go"
 
@@ -395,8 +396,11 @@ func (b *EnvBuilder) createElementCallback(info *v8go.FunctionCallbackInfo) *v8g
 		}))
 		obj.Set("toDataURL", v8go.NewFunctionTemplate(b.iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
 			// Return the fingerprint's pre-collected or synthetic canvas dataURL.
-			// This keeps toDataURL output consistent with fp.Canvas.ToDataURLHash
-			// and, when a canvas dataset is loaded, returns real Chrome output.
+			// The JS wrapper in env_shim_part3.js reclassifies the canvas scene
+			// from _drawOps and overrides this with the scene-correlated value
+			// from __besFp.canvas.sceneDataURLs (T1). This Go-side fallback
+			// returns the empty-scene value and keeps backward compatibility.
+			renderDelay(b.fp) // T6: simulate PNG encode cost
 			dataURL := b.fp.Canvas.ToDataURL
 			if dataURL == "" {
 				dataURL = "data:image/png;base64," + b.fp.Canvas.ToDataURLHash
@@ -626,6 +630,19 @@ func injectCanvas2D(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerp
 	ctx.Set("strokeStyle", "#000000")
 	ctx.Set("lineWidth", float64(1))
 	ctx.Set("font", "10px sans-serif")
+	// fillText/strokeText: real renderers spend measurable time rasterizing
+	// glyphs; trigger renderDelay (T6) so Date.now()/performance.now() deltas
+	// around fillText are non-zero. The actual text draw-op tracking for T1
+	// scene classification happens in env_shim_part3.js (it records into
+	// _drawOps and reclassifies the canvas scene).
+	ctx.Set("fillText", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		renderDelay(fp)
+		return nil
+	}))
+	ctx.Set("strokeText", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		renderDelay(fp)
+		return nil
+	}))
 	for _, m := range []string{"fillRect", "strokeRect", "clearRect", "beginPath", "closePath",
 		"moveTo", "lineTo", "arc", "arcTo", "rect", "fill", "stroke", "clip", "drawImage",
 		"putImageData", "translate", "rotate", "scale", "transform", "setTransform", "save", "restore"} {
@@ -765,6 +782,12 @@ func measureTextWidth(text string, fp *api.Fingerprint) float64 {
 }
 
 func injectWebGL(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerprint) {
+	// drawingBufferWidth/Height mirror the canvas backing store size. The
+	// default canvas is 300x150 (HTML spec) unless resized; risk-control
+	// scripts read these to confirm a real GL context (A-class).
+	ctx.Set("drawingBufferWidth", int32(300))
+	ctx.Set("drawingBufferHeight", int32(150))
+
 	ctx.Set("getParameter", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
 		if len(info.Args()) > 0 {
 			pname := info.Args()[0].Int32()
@@ -776,14 +799,37 @@ func injectWebGL(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerprin
 		return v8go.Null(iso)
 	}))
 	ctx.Set("getExtension", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		// Return an object carrying the extension's named constants, not an
+		// empty object. WEBGL_debug_renderer_info exposes UNMASKED_VENDOR/
+		// RENDERER_WEBGL (37445/37446) that scripts read off the extension
+		// object itself (A-class).
+		name := ""
+		if len(info.Args()) > 0 {
+			name = info.Args()[0].String()
+		}
 		obj := v8go.NewObjectTemplate(iso)
+		switch name {
+		case "WEBGL_debug_renderer_info":
+			obj.Set("UNMASKED_VENDOR_WEBGL", int32(37445))
+			obj.Set("UNMASKED_RENDERER_WEBGL", int32(37446))
+		case "EXT_texture_filter_anisotropic":
+			obj.Set("MAX_TEXTURE_MAX_ANISOTROPY_EXT", int32(34047))
+		case "WEBGL_compressed_texture_s3tc":
+			obj.Set("COMPRESSED_RGB_S3TC_DXT1_EXT", int32(33776))
+			obj.Set("COMPRESSED_RGBA_S3TC_DXT1_EXT", int32(33777))
+			obj.Set("COMPRESSED_RGBA_S3TC_DXT3_EXT", int32(33778))
+			obj.Set("COMPRESSED_RGBA_S3TC_DXT5_EXT", int32(33779))
+		case "OES_texture_float":
+			obj.Set("HALF_FLOAT_OES", int32(36193))
+		case "EXT_color_buffer_half_float", "EXT_color_buffer_float":
+			obj.Set("RGBA32F_EXT", int32(34836))
+			obj.Set("RGB32F_EXT", int32(34837))
+		}
 		inst, _ := obj.NewInstance(info.Context())
 		return inst.Value
 	}))
 	ctx.Set("getSupportedExtensions", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
 		// Bug 8 fix: return a real JS array, not a JSON string.
-		// v8go NewValue with "[\"...\"]" creates a string, not an array.
-		// Build array via JS evaluation.
 		exts := ""
 		for i, e := range fp.WebGL.Extensions {
 			if i > 0 {
@@ -791,7 +837,6 @@ func injectWebGL(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerprin
 			}
 			exts += fmt.Sprintf("%q", e)
 		}
-		// Create array via RunScript on the current context
 		arrVal, _ := info.Context().RunScript("["+exts+"]", "webgl-exts.js")
 		if arrVal != nil {
 			return arrVal
@@ -799,10 +844,65 @@ func injectWebGL(ctx *v8go.ObjectTemplate, iso *v8go.Isolate, fp *api.Fingerprin
 		v, _ := v8go.NewValue(iso, "[]")
 		return v
 	}))
+	// getShaderPrecisionFormat: Chrome/ANGLE D3D11 reports near-fixed ranges
+	// per shader type/precision; hardcode the common highp/mediump/lowp values
+	// (A-class). Returns a JS object via RunScript (v8go can't build objects).
+	ctx.Set("getShaderPrecisionFormat", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		// Args: shaderType, precisionType. Range/min=127,max=127,precision=23
+		// is the universal highp FLOAT profile on D3D11 ANGLE.
+		script := "({rangeMin:127,rangeMax:127,precision:23})"
+		v, _ := info.Context().RunScript(script, "webgl-shaderprec.js")
+		if v != nil {
+			return v
+		}
+		return v8go.Null(iso)
+	}))
+	// getContextAttributes: Chrome D3D11 defaults (A-class). Returns a JS object.
+	ctx.Set("getContextAttributes", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		script := `({alpha:true,antialias:true,depth:true,desynchronized:false,failIfMajorPerformanceCaveat:false,powerPreference:"default",premultipliedAlpha:true,preserveDrawingBuffer:false,stencil:true,xrCompatible:false})`
+		v, _ := info.Context().RunScript(script, "webgl-ctxattrs.js")
+		if v != nil {
+			return v
+		}
+		return v8go.Null(iso)
+	}))
+	// readPixels: replay a pre-collected non-zero RGBA buffer (T3). v8go can't
+	// write TypedArray bytes directly (constraint 12), so return base64 and let
+	// the JS wrapper (env_shim_part3.js) decode into the dst Uint8Array.
+	ctx.Set("readPixels", v8go.NewFunctionTemplate(iso, func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		renderDelay(fp) // T6: simulate render cost
+		data := fp.WebGL.ReadPixelsData
+		if data == "" {
+			return v8go.Null(iso)
+		}
+		v, _ := v8go.NewValue(iso, data)
+		return v
+	}))
 	for _, m := range []string{"createShader", "shaderSource", "compileShader",
 		"createProgram", "attachShader", "linkProgram", "useProgram",
 		"createBuffer", "bindBuffer", "bufferData"} {
 		ctx.Set(m, v8go.NewFunctionTemplate(iso, noopCallback))
+	}
+}
+
+// renderDelay simulates the wall-clock cost of a GPU render+read operation
+// (T6). Risk-control scripts wrap toDataURL/fillText/readPixels in
+// Date.now()/performance.now() and treat 0ms as a sandbox tell. The delay is
+// fp.WebGL.RenderDurationMS ±20% jitter (varies per call via a nanosecond
+// seed, bounded to 80%..120% of base). A no-op when the fingerprint sets 0.
+// Runs on the Isolate thread (safe: only time.Sleep, no v8go API — constraint 11).
+func renderDelay(fp *api.Fingerprint) {
+	base := fp.WebGL.RenderDurationMS
+	if base <= 0 {
+		return
+	}
+	lo := base * 8 / 10 // 80% floor
+	span := base*4/10 + 1 // 40% span → 80%..120%, +1 avoids zero mod
+	now := time.Now().UnixNano()
+	delta := int(now%int64(span)) + lo
+	ms := time.Duration(delta) * time.Millisecond
+	if ms > 0 && ms < 50*time.Millisecond {
+		time.Sleep(ms)
 	}
 }
 
@@ -832,10 +932,18 @@ func (p *PostContextBuilder) injectFingerprintGlobals() {
 			Vendor   string `json:"vendor"`
 			Renderer string `json:"renderer"`
 		} `json:"gpu"`
+		Canvas struct {
+			SceneDataURLs map[string]string `json:"sceneDataURLs,omitempty"`
+		} `json:"canvas"`
+		WebGL struct {
+			ReadPixelsData string `json:"readPixelsData,omitempty"`
+		} `json:"webgl"`
 	}
 	g := fpGlobals{OS: p.fp.OS.Name, Browser: p.fp.Browser.Name}
 	g.GPU.Vendor = p.fp.GPU.Vendor
 	g.GPU.Renderer = p.fp.GPU.Renderer
+	g.Canvas.SceneDataURLs = p.fp.Canvas.SceneDataURLs
+	g.WebGL.ReadPixelsData = p.fp.WebGL.ReadPixelsData
 	raw, err := json.Marshal(g)
 	if err != nil {
 		p.ctx.RunScript("window.__besFp = window.__besFp || {};", "fp-globals.js")

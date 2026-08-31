@@ -8,7 +8,9 @@ package fpengine
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -353,6 +355,8 @@ func buildWebGL(gpu api.GPUProfile) api.WebGLFP {
 		// Sources: Khronos WebGL spec + real Chrome/Direct3D11 ANGLE reporting.
 		// UNMASKED_VENDOR/RENDERER (37445/37446) come from the GPU profile;
 		// the rest are ANGLE/D3D11 defaults consistent across Chrome/Windows.
+		// Coverage targets 40+ parameters so risk-control scripts that probe
+		// getParameter across many pnames no longer hit null (A-class).
 		Params: map[int32]string{
 			37445: vendor,   // UNMASKED_VENDOR_WEBGL
 			37446: renderer, // UNMASKED_RENDERER_WEBGL
@@ -386,8 +390,77 @@ func buildWebGL(gpu api.GPUProfile) api.WebGLFP {
 			3420:  "8",     // BLUE_BITS
 			3422:  "24",    // DEPTH_BITS (D3D11 default)
 			3423:  "8",     // STENCIL_BITS
+			// Additional A-class parameters (real Chrome/ANGLE D3D11 values).
+			// Pushes getParameter coverage past 40 pnames so probing scripts
+			// no longer hit null. Values are Chrome/ANGLE D3D11 defaults.
+			33902: "255",   // ACTIVE_TEXTURE upper bound
+			33777: "4096",  // MAX_VERTEX_UNIFORM_COMPONENTS
+			35659: "30",    // MAX_VERTEX_OUTPUT_COMPONENTS
+			35658: "30",    // MAX_FRAGMENT_INPUT_COMPONENTS
+			3413:  "4",     // SUBPIXEL_BITS
+			32882: "4",     // NUM_PROGRAM_BINARY_FORMATS
+			35371: "4294967295", // MAX_ELEMENT_INDEX (GLuint max)
+			34852: "2048",  // MAX_ARRAY_TEXTURE_LAYERS
+			36007: "2147483647", // MAX_SHADER_STORAGE_BLOCK_SIZE
+			36183: "84",    // MAX_UNIFORM_BUFFER_BINDINGS (D3D11 ~84)
+			36464: "16",    // MAX_TEXTURE_LOD_BIAS (D3D11 ~16.0)
+			36795: "84",    // MAX_FRAGMENT_UNIFORM_BLOCKS
+			35373: "84",    // MAX_VERTEX_UNIFORM_BLOCKS
+			35374: "84",    // MAX_COMBINED_UNIFORM_BLOCKS
+			35375: "16384", // MAX_UNIFORM_BLOCK_SIZE
+			35377: "0,8192", // MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS
+			35379: "0,8192", // MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS
+			36465: "16",    // TEXTURE_MAX_ANISOTROPY_EXT (D3D11 ~16)
 		},
+		// T3: deterministic non-zero RGBA pixel buffer (8x8) replayed by
+		// readPixels. Generated from the GPU renderer so it is stable per
+		// fingerprint but distinct across fingerprints, and never all-zero
+		// (a noop readPixels returns zeros — detectable).
+		ReadPixelsData:   syntheticReadPixels(renderer),
+		ReadPixelsHash:   readPixelsHash(renderer),
+		// T6: simulated render cost (ms) by GPU tier. Discrete GPUs render
+		// faster than integrated; the value is a baseline the Go callback
+		// jitters ±20% per call.
+		RenderDurationMS: gpuRenderDurationMS(renderer),
 	}
+}
+
+// gpuRenderDurationMS returns a baseline synthetic render duration in
+// milliseconds for the given WebGL renderer string. Risk-control scripts
+// wrap render+read operations in Date.now()/performance.now() and treat 0ms
+// as a sandbox tell; this baseline is applied (with ±20% jitter) inside the
+// Go toDataURL/fillText/readPixels callbacks. Values are ordered by GPU tier:
+// discrete (nvidia/amd) < 2ms, integrated (intel) 2-3ms, software 4-5ms.
+func gpuRenderDurationMS(renderer string) int {
+	r := strings.ToLower(renderer)
+	switch {
+	case strings.Contains(r, "nvidia"), strings.Contains(r, "radeon"), strings.Contains(r, "amd"):
+		return 2
+	case strings.Contains(r, "intel"):
+		return 3
+	case strings.Contains(r, "apple"), strings.Contains(r, "m1"), strings.Contains(r, "m2"), strings.Contains(r, "m3"):
+		return 2
+	default:
+		return 4
+	}
+}
+
+// syntheticReadPixels returns base64-encoded RGBA pixels (8x8) derived from
+// the renderer string. Used by readPixels replay (T3).
+func syntheticReadPixels(renderer string) string {
+	h := sha256.Sum256([]byte("readpixels:" + renderer))
+	const n = 8
+	buf := make([]byte, n*n*4)
+	for i := 0; i < len(buf); i++ {
+		buf[i] = h[i%32] ^ byte(i*7)
+	}
+	return base64.StdEncoding.EncodeToString(buf)
+}
+
+// readPixelsHash returns a 16-hex-char digest of the readPixels buffer.
+func readPixelsHash(renderer string) string {
+	h := sha256.Sum256([]byte("readpixels:" + renderer))
+	return hex.EncodeToString(h[:8])
 }
 
 func platformToUAData(osName string) string {

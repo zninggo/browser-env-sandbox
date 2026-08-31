@@ -145,14 +145,20 @@
   }
 
   // --- Canvas ---
+  // Symbol.toStringTag lives on the prototype (not the instance) so that
+  // Object.prototype.toString.call(ctx) returns [object WebGLRenderingContext]
+  // once env_shim_part3.js links ctx → RC.prototype via setPrototypeOf.
   if (typeof CanvasRenderingContext2D === 'undefined') {
-    window.CanvasRenderingContext2D = function() { this[Symbol.toStringTag] = 'CanvasRenderingContext2D'; };
+    window.CanvasRenderingContext2D = function() {};
+    Object.defineProperty(window.CanvasRenderingContext2D.prototype, Symbol.toStringTag, { value: 'CanvasRenderingContext2D' });
   }
   if (typeof WebGLRenderingContext === 'undefined') {
-    window.WebGLRenderingContext = function() { this[Symbol.toStringTag] = 'WebGLRenderingContext'; };
+    window.WebGLRenderingContext = function() {};
+    Object.defineProperty(window.WebGLRenderingContext.prototype, Symbol.toStringTag, { value: 'WebGLRenderingContext' });
   }
   if (typeof WebGL2RenderingContext === 'undefined') {
-    window.WebGL2RenderingContext = function() { this[Symbol.toStringTag] = 'WebGL2RenderingContext'; };
+    window.WebGL2RenderingContext = function() {};
+    Object.defineProperty(window.WebGL2RenderingContext.prototype, Symbol.toStringTag, { value: 'WebGL2RenderingContext' });
   }
   if (typeof ImageData === 'undefined') {
     window.ImageData = function(data, w, h) { this.data = data || []; this.width = w || 0; this.height = h || 0; this[Symbol.toStringTag] = 'ImageData'; };

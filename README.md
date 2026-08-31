@@ -68,7 +68,7 @@
 CGO_ENABLED=1 go build -o bes ./cmd/bes
 CGO_ENABLED=1 go build -o bes-server ./cmd/bes-server
 
-# 运行自测套件（224 项浏览器环境检测）
+# 运行自测套件（236 项浏览器环境检测）
 CGO_ENABLED=1 go build -o bes-selftest ./cmd/bes-selftest
 ./bes-selftest
 

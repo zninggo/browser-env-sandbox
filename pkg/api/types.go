@@ -46,6 +46,11 @@ type CanvasFP struct {
 	ToDataURLHash string `json:"to_data_url_hash"`
 	ToDataURL     string `json:"to_data_url"`     // full data:image/png;base64,... (pre-collected or synthetic)
 	MeasureText   map[string]float64 `json:"measure_text"`
+	// SceneDataURLs maps a draw-scene classification to a pre-collected
+	// dataURL so toDataURL can return content-correlated output (T1).
+	// Keys: "empty", "text_only", "geometry_only", "text_and_geometry".
+	// Missing keys fall back to ToDataURL.
+	SceneDataURLs map[string]string `json:"scene_data_urls,omitempty"`
 }
 
 // WebGLFP holds WebGL fingerprint data.
@@ -55,6 +60,14 @@ type WebGLFP struct {
 	Version    string   `json:"version"`
 	Extensions []string `json:"extensions"`
 	Params     map[int32]string `json:"params"`
+	// ReadPixelsData is a base64-encoded RGBA pixel buffer replayed by
+	// readPixels so the call returns non-zero content (T3).
+	ReadPixelsData string `json:"read_pixels_data,omitempty"`
+	// ReadPixelsHash is a short hex digest of the pixel buffer for logging.
+	ReadPixelsHash string `json:"read_pixels_hash,omitempty"`
+	// RenderDurationMS is the simulated render cost in milliseconds applied
+	// by Go callbacks (T6). 0 means no synthetic delay.
+	RenderDurationMS int `json:"render_duration_ms,omitempty"`
 }
 
 // AudioFP holds AudioContext fingerprint data.
