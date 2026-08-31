@@ -288,7 +288,7 @@ func main() {
 		{"measureText non-linear (Bug 7 residual)", `(function(){var c=document.createElement('canvas').getContext('2d');var perI=c.measureText('iiiii').width/5;var perW=c.measureText('WWWWW').width/5;return String(perW>perI && perW!==perI)})()`, "true"},
 		{"measureText width varies per char (Bug 7 residual)", `(function(){var c=document.createElement('canvas').getContext('2d');var w1=c.measureText('iiiii').width;var w2=c.measureText('WWWWW').width;return String(w2 > w1)})()`, "true"},
 		{"measureText returns TextMetrics-like object", `(function(){var m=document.createElement('canvas').getContext('2d').measureText('hi');return String(typeof m.width === 'number' && typeof m.actualBoundingBoxAscent === 'number')})()`, "true"},
-	// ── render-capability 渲染能力补全（T1/T3/T6 + A 类 API 形状）──
+	// ── 渲染能力补全（T1/T3/T6 + A 类 API 形状）──
 	{"T1 toDataURL text vs geometry differ", `(function(){var c=document.createElement('canvas');var x=c.getContext('2d');var a=c.toDataURL();x.fillText('hi',0,0);var b=c.toDataURL();x.fillRect(0,0,10,10);var d=c.toDataURL();return String(a!==b&&b!==d&&a!==d)})()`, "true"},
 	{"T1 toDataURL empty scene has PNG signature", `(function(){var u=document.createElement('canvas').toDataURL();var b=u.split(',')[1];var bin=atob(b.substring(0,8));return String(bin.charCodeAt(0)===137&&bin.charCodeAt(1)===80)})()`, "true"},
 	{"T3 readPixels returns non-zero pixels", `(function(){var c=document.createElement('canvas');var g=c.getContext('webgl');var buf=new Uint8Array(64);g.readPixels(0,0,8,8,g.RGBA,g.UNSIGNED_BYTE,buf);var nz=0;for(var i=0;i<buf.length;i++)if(buf[i]!==0)nz++;return String(nz>0)})()`, "true"},
@@ -314,10 +314,10 @@ func main() {
 		{"URL origin normalized (Bug 29)", `new URL('https://example.com/path?q=1').origin`, "https://example.com"},
 		// ── Worker real execution ──
 		{"Worker roundtrip postMessage (double)", `new Promise(function(res, rej){ var w = new Worker("self.onmessage = function(e){ self.postMessage(e.data * 2); };"); w.onmessage = function(e){ res(String(e.data)); }; w.onerror = function(e){ rej(new Error(String(e.message || e))); }; w.postMessage(21); setTimeout(function(){ rej(new Error("worker timeout")); }, 3000); })`, "42"},
-		// ── Blob-URL Worker (blob-worker): blob source must reach worker.go non-empty ──
-		{"Blob→createObjectURL stores full source (blob-worker)", `(function(){ var b = new Blob(["self.onmessage=function(e){self.postMessage(e.data*3);};"]); var u = URL.createObjectURL(b); return String(URL.__besBlobs[u].length > 0); })()`, "true"},
-		{"Blob-URL Worker executes real source (blob-worker)", `new Promise(function(res, rej){ var b = new Blob(["self.onmessage = function(e){ self.postMessage(e.data + 100); };"]); var u = URL.createObjectURL(b); var w = new Worker(u); w.onmessage = function(e){ res(String(e.data)); }; w.onerror = function(e){ rej(new Error(String(e.message || e))); }; w.postMessage(5); setTimeout(function(){ rej(new Error("blob worker timeout — source likely empty (blob-worker regression)")); }, 3000); })`, "105"},
-		{"createObjectURL stores Blob without _besBytes (blob-worker)", `(function(){ var fake = { size: 3, type: "text/plain" }; var u = URL.createObjectURL(fake); return String(URL.__besBlobs[u] !== undefined); })()`, "true"},
+		// ── Blob-URL Worker: blob source must reach worker.go non-empty ──
+		{"Blob→createObjectURL stores full source", `(function(){ var b = new Blob(["self.onmessage=function(e){self.postMessage(e.data*3);};"]); var u = URL.createObjectURL(b); return String(URL.__besBlobs[u].length > 0); })()`, "true"},
+		{"Blob-URL Worker executes real source", `new Promise(function(res, rej){ var b = new Blob(["self.onmessage = function(e){ self.postMessage(e.data + 100); };"]); var u = URL.createObjectURL(b); var w = new Worker(u); w.onmessage = function(e){ res(String(e.data)); }; w.onerror = function(e){ rej(new Error(String(e.message || e))); }; w.postMessage(5); setTimeout(function(){ rej(new Error("blob worker timeout — source likely empty (regression)")); }, 3000); })`, "105"},
+		{"createObjectURL stores Blob without _besBytes", `(function(){ var fake = { size: 3, type: "text/plain" }; var u = URL.createObjectURL(fake); return String(URL.__besBlobs[u] !== undefined); })()`, "true"},
 		// ── Dynamic import() polyfill ──
 		{"importModule exists", `typeof importModule`, "function"},
 		{"importModule default export", `importModule("data:text/javascript;base64," + btoa("export default 42")).then(function(m){ return String(m.default); })`, "42"},

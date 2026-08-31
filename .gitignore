@@ -5,6 +5,7 @@ node_modules/
 /bes
 /bes-server
 /bes-selftest
+/bes-bench
 *.exe
 /vendor/
 

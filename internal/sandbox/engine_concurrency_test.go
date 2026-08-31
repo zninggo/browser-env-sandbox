@@ -183,7 +183,7 @@ func TestEvalAwaitTimeoutTerminates(t *testing.T) {
 }
 
 // TestEvalAwaitSetIntervalReturnsImmediately guards the setInterval deadlock
-// fix (setinterval-deadlock). Before the fix, registering a recurring setInterval pinned
+// fix. Before the fix, registering a recurring setInterval pinned
 // PendingTimers() > 0 forever, so the non-Promise drain loop never exited and
 // EvalAwait hit the 30s timeout via TerminateExecution. A real browser returns
 // from eval at once when only a setInterval is registered; BES must match that.
