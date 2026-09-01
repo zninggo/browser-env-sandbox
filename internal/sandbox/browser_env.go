@@ -15,6 +15,7 @@ import (
 	"github.com/zninggo/v8go"
 
 	"github.com/zninggo/browser-env-sandbox/internal/captcha"
+	"github.com/zninggo/browser-env-sandbox/internal/nav"
 	"github.com/zninggo/browser-env-sandbox/pkg/api"
 )
 
@@ -1707,6 +1708,110 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 	asyncFnVal := asyncFn.GetFunction(p.ctx)
 	p.global.Set("__besNetRequestAsync", asyncFnVal)
 
+	// __bes_navigateAsync(urlStr, jsCallback): BES real top-level navigation.
+	// Mirrors real-browser location.assign / location.href: a GET that follows
+	// the 3xx redirect chain (cap nav.MaxHops) and, per hop, re-derives the
+	// request headers (cookie jar scoped to that hop's host, Referer = previous
+	// hop, UA/Accept-Language/Sec-CH-UA aligned with the session). Every hop's
+	// Set-Cookie is stamped onto the shared jar (host-scoped), so SSO-style
+	// redirect chains land their login cookies exactly as a real navigator
+	// would. cb receives {"url","status","hops","redirected","error"} (the
+	// landed URL) so the caller can then export the jar.
+	navHeaderFactory := func(target string) map[string]string {
+		hdrs := make(map[string]string)
+		u, perr := url.Parse(target)
+		if perr != nil || u.Host == "" {
+			return hdrs
+		}
+		scheme := strings.ToLower(u.Scheme)
+		reqPath := u.Path
+		if reqPath == "" {
+			reqPath = "/"
+		}
+		if cookieStr := cookies.CookieHeaderFor(scheme, u.Hostname(), reqPath); cookieStr != "" {
+			hdrs["Cookie"] = cookieStr
+		}
+		ua := sessUA
+		if ua == "" {
+			ua = userAgent
+		}
+		if ua != "" {
+			hdrs["User-Agent"] = ua
+		}
+		if acceptLanguage != "" {
+			hdrs["Accept-Language"] = acceptLanguage
+		}
+		if secChUA != "" {
+			hdrs["Sec-CH-UA"] = secChUA
+			hdrs["Sec-CH-UA-Mobile"] = secChUAMobile
+			hdrs["Sec-CH-UA-Platform"] = secChUAPlatform
+		}
+		for k, v := range sessExtra {
+			if _, has := headerLookup(hdrs, k); !has {
+				hdrs[k] = v
+			}
+		}
+		return hdrs
+	}
+	navCallback := func(info *v8go.FunctionCallbackInfo) *v8go.Value {
+		args := info.Args()
+		if len(args) < 2 {
+			return nil
+		}
+		startURL := args[0].String()
+		ctxNav := info.Context()
+		cbNav, cbNavErr := args[1].AsFunction()
+		globalNav := ctxNav.Global()
+		if cbNavErr != nil || cbNav == nil {
+			log.Printf("[sandbox] navigate: arg[1] is not a function")
+			return nil
+		}
+
+		go func() {
+			do := func(method, u string, headers map[string]string) (nav.HopResult, error) {
+				resp, rerr := handler.Request(method, u, headers, nil)
+				if rerr != nil {
+					return nav.HopResult{}, rerr
+				}
+				// Stamp this hop's Set-Cookie onto the jar (host-scoped) so the
+				// chain's login cookies land exactly as the final export needs.
+				if uu, perr := url.Parse(u); perr == nil {
+					if len(resp.SetCookies) > 0 {
+						cookies.ApplySetCookie(resp.SetCookies, uu.Hostname())
+					} else if resp.Cookies != nil {
+						for k, v := range resp.Cookies {
+							cookies.Set(k, v, "/", "")
+						}
+					}
+				}
+				return nav.HopResult{Status: resp.Status, Headers: resp.Headers, SetCookies: resp.SetCookies}, nil
+			}
+			finalURL, status, hops, redirected, nerr := nav.FollowRedirects(do, startURL, navHeaderFactory, location)
+			out := fmt.Sprintf(`{"url":%s,"status":%d,"hops":%d,"redirected":%t}`,
+				jsonString(finalURL), status, hops, redirected)
+			if nerr != nil {
+				out = fmt.Sprintf(`{"url":%s,"status":0,"hops":%d,"redirected":%t,"error":%s}`,
+					jsonString(finalURL), hops, redirected, jsonString(nerr.Error()))
+			}
+			p.timerMgr.scheduleTimer(0, false, func() {
+				rv, rerr := v8go.NewValue(p.iso, out)
+				if rerr != nil {
+					log.Printf("[sandbox] navigate NewValue error: %v", rerr)
+					ctxNav.PerformMicrotaskCheckpoint()
+					return
+				}
+				if _, cerr := cbNav.Call(globalNav, rv); cerr != nil {
+					log.Printf("[sandbox] navigate cb call error: %v", cerr)
+				}
+				ctxNav.PerformMicrotaskCheckpoint()
+			})
+		}()
+		return nil
+	}
+	navFn := v8go.NewFunctionTemplate(iso, navCallback)
+	navFnVal := navFn.GetFunction(p.ctx)
+	p.global.Set("__bes_navigateAsync", navFnVal)
+
 	// Real XHR + fetch implementation that calls __besNetRequest.
 	//
 	// Binary-safe by design: the Go callback returns the response body twice —
@@ -1969,6 +2074,52 @@ func (p *PostContextBuilder) injectRealFetchXHR() {
 		})();
 	`
 	p.ctx.RunScript(realJS, "fetch-xhr.js")
+
+	// Top-level navigation shim. __besNavigate(url) performs a real navigation
+	// through __bes_navigateAsync (redirect-following, per-hop cookie stamping)
+	// and resolves {"url","status","hops","redirected"}. location.assign /
+	// location.replace trigger the navigation and roll the landed URL back onto
+	// location.href / document.URL so a script reading them after navigation
+	// sees the resolved page (a superset of real-browser returns: a Promise).
+	navShim := `
+		(function(){
+			function __besNav(url) {
+				if (typeof url !== 'string' || !url) {
+					return Promise.reject(new Error('navigate: url required'));
+				}
+				return new Promise(function(resolve, reject){
+					__bes_navigateAsync(url, function(rjson) {
+						try { resolve(JSON.parse(rjson)); }
+						catch (e) { reject(e); }
+					});
+				});
+			}
+			window.__besNavigate = __besNav;
+			function __besNavAndRoll(url, replace) {
+				return __besNav(url).then(function(r) {
+					try {
+						Object.defineProperty(location, 'href', {value: r.url, configurable: true, writable: true});
+						Object.defineProperty(document, 'URL', {value: r.url, configurable: true, writable: true});
+						Object.defineProperty(document, 'documentURI', {value: r.url, configurable: true, writable: true});
+					} catch (e) {}
+					return r;
+				});
+			}
+			function __besDefineNav(name, replace) {
+				try {
+					Object.defineProperty(location, name, {
+						value: function(u){ return __besNavAndRoll(u, replace); },
+						writable: true, configurable: true
+					});
+				} catch (e) {
+					location[name] = function(u){ return __besNavAndRoll(u, replace); };
+				}
+			}
+			__besDefineNav('assign', false);
+			__besDefineNav('replace', true);
+		})();
+	`
+	p.ctx.RunScript(navShim, "navigate-shim.js")
 }
 
 // headerLookup does a case-insensitive lookup of a header in a map whose keys
