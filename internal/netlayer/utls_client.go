@@ -22,30 +22,37 @@ import (
 // UTLSClient is a TLS-fingerprinting HTTP client using utls.
 // It precisely mimics Chrome's TLS ClientHello (JA3/JA4) at the Go level.
 //
-// The ClientHello preset tracks the session fingerprint's Chrome version
-// (chromeVersion) so the TLS handshake, HTTP/2 frames, and User-Agent all
-// tell the same version story. The post-quantum signature algorithms
-// (0x0904-0x0906) are injected only for Chrome 140+, matching when real
-// Chrome started sending them.
+// The ClientHello preset tracks the session fingerprint's Chrome version (via
+// the data-driven chromeFingerprintProfile) so the TLS handshake, HTTP/2
+// frames, and User-Agent all tell the same version story. The post-quantum
+// signature algorithms (0x0904-0x0906) are injected only for Chrome 140+,
+// matching when real Chrome started sending them.
 type UTLSClient struct {
-	target        string
-	chromeVersion int
-	proxy         string
-	timeout       time.Duration
+	target  string
+	profile chromeFingerprintProfile
+	proxy   string
+	timeout time.Duration
 }
 
 // NewUTLSClient creates a utls-based TLS client.
 // target is a Chrome impersonate target like "chrome150"; the numeric part
-// selects the closest available utls ClientHello preset. When no version can
-// be parsed, the preset defaults to HelloChrome_133 (utls's Chrome_Auto).
+// selects the fingerprint profile (ClientHello preset + HTTP/2 frames) via the
+// data-driven chromeFingerprintLadder table in chrome_fingerprint.go. When no
+// version can be parsed, the profile defaults to chrome150 (which resolves to
+// Chrome 133's ClientHello + the 140+ PQ signature algorithms, matching the
+// platform's default Chrome major).
 func NewUTLSClient(target string) *UTLSClient {
 	if target == "" {
-		target = "chrome"
+		target = "chrome150"
+	}
+	version := parseChromeVersion(target)
+	if version == 0 {
+		version = 150
 	}
 	return &UTLSClient{
-		target:        target,
-		chromeVersion: parseChromeVersion(target),
-		timeout:       30 * time.Second,
+		target:  target,
+		profile: chromeProfileFor(version),
+		timeout: 30 * time.Second,
 	}
 }
 
@@ -58,21 +65,6 @@ func parseChromeVersion(target string) int {
 		return 0
 	}
 	return n
-}
-
-// utlsPresetFor maps a Chrome version to the closest available utls preset.
-// utls v1.8.2 ships Chrome presets up to 133; newer versions reuse 133
-// (ClientHello bytes have been stable across recent Chrome releases apart
-// from the PQ signature algorithms, which are injected separately below).
-func utlsPresetFor(chromeVersion int) utls.ClientHelloID {
-	switch {
-	case chromeVersion >= 133:
-		return utls.HelloChrome_133
-	case chromeVersion >= 120:
-		return utls.HelloChrome_131
-	default:
-		return utls.HelloChrome_133
-	}
 }
 
 func (c *UTLSClient) SetProxy(proxyURL string)   { c.proxy = proxyURL }
@@ -95,7 +87,7 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, host, port string) (net.Conn,
 		return nil, fmt.Errorf("dial failed: %w", err)
 	}
 
-	preset := utlsPresetFor(c.chromeVersion)
+	preset := c.profile.hello
 	tlsConn := utls.UClient(conn, &utls.Config{
 		ServerName: host,
 	}, preset)
@@ -113,7 +105,7 @@ func (c *UTLSClient) dialUTLS(ctx context.Context, host, port string) (net.Conn,
 	// into the SignatureAlgorithmsExtension. Chrome 140+ includes these, and
 	// without them the JA4 sig-alg hash differs from real Chrome. Older
 	// Chrome versions must NOT send them (the JA4 would be ahead of its time).
-	if c.chromeVersion >= 140 {
+	if c.profile.pqSigAlgs {
 		for _, ext := range tlsConn.Extensions {
 			if sigExt, ok := ext.(*utls.SignatureAlgorithmsExtension); ok {
 				sigExt.SupportedSignatureAlgorithms = append(

@@ -24,25 +24,14 @@ import (
 // non-idempotent requests (e.g. a POST that already executed).
 var errNoH2ALPN = errors.New("ALPN did not negotiate h2")
 
-// Chrome HTTP/2 fingerprint constants.
-// Captured from real Chromium 151 via tls.peet.ws
-// (akamai_fingerprint: 1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p,
-// hash 52d84b11737d980aef856699f885ca86).
-const (
-	// chromeH2HeaderTableSize is SETTINGS_HEADER_TABLE_SIZE (0x1).
-	chromeH2HeaderTableSize = 65536
-	// chromeH2InitialWindowSize is SETTINGS_INITIAL_WINDOW_SIZE (0x4), 6 MB.
-	chromeH2InitialWindowSize = 6291456
-	// chromeH2MaxHeaderListSize is SETTINGS_MAX_HEADER_LIST_SIZE (0x6).
-	chromeH2MaxHeaderListSize = 262144
-	// chromeH2ConnWindowUpdate is the WINDOW_UPDATE increment sent on stream 0
-	// (connection-level flow control). Chrome sends 15663105.
-	chromeH2ConnWindowUpdate = 15663105
-	// chromeH2PriorityWeight is the zero-indexed weight for the HEADERS frame
-	// priority field. Real Chrome uses weight=256, stored as 255 in the frame
-	// (spec: "add one to obtain a weight between 1 and 256").
-	chromeH2PriorityWeight = 255
-)
+// Chrome's HTTP/2 frame fingerprint (SETTINGS order+values, WINDOW_UPDATE
+// increment, HEADERS PRIORITY weight) is data-driven like the TLS ClientHello:
+// it lives in chromeFingerprintProfile.h2 (see chrome_fingerprint.go), resolved
+// from the same Chrome version as the UA. The values are captured from real
+// Chromium 151 via tls.peet.ws (akamai fingerprint 1:65536;2:0;4:6291456;
+// 6:262144|15663105|0|m,a,s,p, hash 52d84b11737d980aef856699f885ca86) and have
+// been stable across Chrome 57→current — there is no per-version drift to
+// model yet, so every ladder entry points at chromeH2Default.
 
 // requestH2 sends an HTTP request over a manually-constructed HTTP/2
 // connection with Chrome-precise frame fingerprinting.
@@ -108,16 +97,16 @@ func (c *UTLSClient) requestH2(ctx context.Context, method, reqURL string, heade
 
 	// 4c. Send SETTINGS (Chrome's 4 settings, in Chrome's exact order).
 	if err := framer.WriteSettings(
-		http2.Setting{ID: http2.SettingHeaderTableSize, Val: chromeH2HeaderTableSize},
+		http2.Setting{ID: http2.SettingHeaderTableSize, Val: c.profile.h2.headerTableSize},
 		http2.Setting{ID: http2.SettingEnablePush, Val: 0},
-		http2.Setting{ID: http2.SettingInitialWindowSize, Val: chromeH2InitialWindowSize},
-		http2.Setting{ID: http2.SettingMaxHeaderListSize, Val: chromeH2MaxHeaderListSize},
+		http2.Setting{ID: http2.SettingInitialWindowSize, Val: c.profile.h2.initialWindowSize},
+		http2.Setting{ID: http2.SettingMaxHeaderListSize, Val: c.profile.h2.maxHeaderListSize},
 	); err != nil {
 		return nil, fmt.Errorf("write settings: %w", err)
 	}
 
 	// 4d. Send WINDOW_UPDATE (connection-level, stream 0).
-	if err := framer.WriteWindowUpdate(0, chromeH2ConnWindowUpdate); err != nil {
+	if err := framer.WriteWindowUpdate(0, c.profile.h2.connWindowUpdate); err != nil {
 		return nil, fmt.Errorf("write window update: %w", err)
 	}
 
@@ -153,7 +142,7 @@ func (c *UTLSClient) requestH2(ctx context.Context, method, reqURL string, heade
 		Priority: http2.PriorityParam{
 			StreamDep: 0,
 			Exclusive: true,
-			Weight:    chromeH2PriorityWeight,
+			Weight:    c.profile.h2.priorityWeight,
 		},
 	}); err != nil {
 		return nil, fmt.Errorf("write headers: %w", err)
@@ -175,7 +164,7 @@ func (c *UTLSClient) requestH2(ctx context.Context, method, reqURL string, heade
 	// 6. Switch framer to read from the connection for response frames.
 	// Create a new framer that reads from the connection.
 	readFramer := http2.NewFramer(conn, conn)
-	return readH2Response(readFramer)
+	return readH2Response(readFramer, c.profile.h2)
 }
 
 // readH2Response reads HTTP/2 response frames from the framer until stream 1
@@ -183,14 +172,14 @@ func (c *UTLSClient) requestH2(ctx context.Context, method, reqURL string, heade
 // HEADERS/CONTINUATION (decodes response headers), and DATA (accumulates body).
 //
 // Flow control: HTTP/2 DATA frames are subject to flow control. The client
-// advertises an initial window (chromeH2InitialWindowSize, 6 MB) per stream
-// plus a connection-level increment (chromeH2ConnWindowUpdate). Without
-// sending WINDOW_UPDATE back as the body is consumed, a response larger than
-// the window stalls the server — it cannot send more DATA and ReadFrame
-// eventually blocks until the deadline. We track consumed bytes on both the
-// stream and the connection, and emit WINDOW_UPDATE once each crosses a
-// refill threshold (half the initial window), mirroring what real Chrome does.
-func readH2Response(framer *http2.Framer) (*Response, error) {
+// advertises an initial window (h2.initialWindowSize, 6 MB) per stream plus a
+// connection-level increment (h2.connWindowUpdate). Without sending
+// WINDOW_UPDATE back as the body is consumed, a response larger than the
+// window stalls the server — it cannot send more DATA and ReadFrame eventually
+// blocks until the deadline. We track consumed bytes on both the stream and
+// the connection, and emit WINDOW_UPDATE once each crosses a refill threshold
+// (half the initial window), mirroring what real Chrome does.
+func readH2Response(framer *http2.Framer, h2 h2Fingerprint) (*Response, error) {
 	respHeaders := make(map[string]string)
 	cookies := make(map[string]string)
 	var setCookies []string
@@ -199,7 +188,7 @@ func readH2Response(framer *http2.Framer) (*Response, error) {
 	streamEnded := false
 
 	// hpack decoder for response headers (max table size matches Chrome's 65536).
-	hdec := hpack.NewDecoder(chromeH2HeaderTableSize, nil)
+	hdec := hpack.NewDecoder(h2.headerTableSize, nil)
 
 	// Accumulator for multi-frame header blocks (HEADERS + CONTINUATION).
 	var hdrBlock bytes.Buffer
@@ -207,13 +196,15 @@ func readH2Response(framer *http2.Framer) (*Response, error) {
 
 	// Flow-control accounting. Both windows start at the values we advertised
 	// to the server (initial stream window + connection-level increment).
-	streamWindow := chromeH2InitialWindowSize
-	connWindow := chromeH2InitialWindowSize + chromeH2ConnWindowUpdate
+	initialWindow := int(h2.initialWindowSize)
+	connWindowTotal := int(h2.initialWindowSize) + int(h2.connWindowUpdate)
+	streamWindow := initialWindow
+	connWindow := connWindowTotal
 	// Refill once a window has dropped below half of its initial size. Using a
 	// fraction (rather than waiting until exhaustion) keeps the server fed and
 	// matches Chrome's behavior of refreshing ahead of depletion.
-	const streamRefillThreshold = chromeH2InitialWindowSize / 2
-	const connRefillThreshold = (chromeH2InitialWindowSize + chromeH2ConnWindowUpdate) / 2
+	streamRefillThreshold := initialWindow / 2
+	connRefillThreshold := connWindowTotal / 2
 
 	for !streamEnded {
 		frame, err := framer.ReadFrame()
@@ -281,14 +272,14 @@ func readH2Response(framer *http2.Framer) (*Response, error) {
 				connWindow -= consumed
 
 				if streamWindow <= streamRefillThreshold {
-					inc := chromeH2InitialWindowSize - streamWindow
+					inc := initialWindow - streamWindow
 					if err := framer.WriteWindowUpdate(1, uint32(inc)); err != nil {
 						return nil, fmt.Errorf("write stream window update: %w", err)
 					}
 					streamWindow += inc
 				}
 				if connWindow <= connRefillThreshold {
-					inc := (chromeH2InitialWindowSize + chromeH2ConnWindowUpdate) - connWindow
+					inc := connWindowTotal - connWindow
 					if err := framer.WriteWindowUpdate(0, uint32(inc)); err != nil {
 						return nil, fmt.Errorf("write conn window update: %w", err)
 					}
