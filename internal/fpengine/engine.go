@@ -58,6 +58,16 @@ func (e *Engine) GenerateWithTimezone(seed uint64, browser, os, timezone string)
 	}
 	rng := newSeededRNG(seed)
 
+	// 0. Data-driven device profile (joint distribution). When available and
+	// the browser/os constraint is satisfiable, the whole fingerprint is drawn
+	// coherently from one conditioning UA (GPU ↔ screen ↔ fonts ↔ CPU ↔ memory
+	// ↔ platform co-vary like a real device). Falls back to the legacy
+	// independent sampler when no joint data is loaded (or the constraint is
+	// unsupported, e.g. iOS/Edge).
+	if dpp, ok := e.sampleDeviceProfile(rng, browser, os); ok {
+		return e.buildFromDeviceProfile(seed, rng, dpp, timezone)
+	}
+
 	// 1. Sample browser profile
 	bp := e.kb.SampleBrowser(rng, browser)
 
@@ -87,7 +97,7 @@ func (e *Engine) GenerateWithTimezone(seed uint64, browser, os, timezone string)
 	}
 
 	// 6. Build navigator from all the above (with rng for real data sampling)
-	nav := buildNavigator(bp, osp, gpu, screen, rng, langs)
+	nav := buildNavigator(bp, osp, gpu, screen, rng, langs, nil)
 
 	// 7. Build canvas/WebGL/audio from knowledge base hashes
 	canvas := e.kb.LookupCanvasHash(bp.MajorVer, osp.Name, gpu.Vendor)
@@ -230,8 +240,21 @@ func tzLanguageConsistent(tz, lang string) bool {
 
 // --- internal helpers ---
 
-func buildNavigator(bp api.BrowserProfile, osp api.OSProfile, gpu api.GPUProfile, screen map[string]any, rng *seededRNG, languages []string) map[string]any {
+// jointOverrides, when non-nil, carries device-profile-sampled values that
+// must not be re-sampled independently (that would break the joint
+// distribution). A zero value means "derive as the legacy path does".
+type jointOverrides struct {
+	ua        string // verbatim User-Agent (device-profile path)
+	hwConc    int    // >0 = use, else sample from the flat CPU list
+	devMem    int    // >0 = use, else sample from the flat memory list
+	maxTouch  int    // >=0 = use, else 0 (legacy default)
+}
+
+func buildNavigator(bp api.BrowserProfile, osp api.OSProfile, gpu api.GPUProfile, screen map[string]any, rng *seededRNG, languages []string, ov *jointOverrides) map[string]any {
 	ua := fmt.Sprintf(bp.UATemplate, osp.UASegment, bp.Version)
+	if ov != nil && ov.ua != "" {
+		ua = ov.ua
+	}
 
 	// Language: derive from timezone-paired languages (passed in), not hardcoded.
 	langFirst := "en"
@@ -246,9 +269,13 @@ func buildNavigator(bp api.BrowserProfile, osp api.OSProfile, gpu api.GPUProfile
 	// that range (e.g. 640/384 from a polluted dataset) are a deterministic bot
 	// signal, so clamp even if the data source is unsanitized.
 	hwConc := 8
-	hwConcVals := CurrentFpHardwareConcurrency()
-	if len(hwConcVals) > 0 {
-		hwConc = hwConcVals[rng.Intn(len(hwConcVals))]
+	if ov != nil && ov.hwConc > 0 {
+		hwConc = ov.hwConc
+	} else {
+		hwConcVals := CurrentFpHardwareConcurrency()
+		if len(hwConcVals) > 0 {
+			hwConc = hwConcVals[rng.Intn(len(hwConcVals))]
+		}
 	}
 	if hwConc < minHardwareConcurrency || hwConc > maxHardwareConcurrency {
 		hwConc = 8
@@ -256,12 +283,23 @@ func buildNavigator(bp api.BrowserProfile, osp api.OSProfile, gpu api.GPUProfile
 
 	// Device memory: sample from real data (4,8,16,32...)
 	devMem := 8
-	dmVals := CurrentFpDeviceMemory()
-	if len(dmVals) > 0 {
-		devMem = dmVals[rng.Intn(len(dmVals))]
-		if devMem < 1 {
-			devMem = 8 // skip 0.5 etc, use minimum realistic
+	if ov != nil && ov.devMem > 0 {
+		devMem = ov.devMem
+	} else {
+		dmVals := CurrentFpDeviceMemory()
+		if len(dmVals) > 0 {
+			devMem = dmVals[rng.Intn(len(dmVals))]
+			if devMem < 1 {
+				devMem = 8 // skip 0.5 etc, use minimum realistic
+			}
 		}
+	}
+
+	// maxTouchPoints: device-profile path preserves the sampled value (e.g. 10
+	// for a touch-capable Windows device); legacy defaults to 0 (desktop).
+	maxTouch := 0
+	if ov != nil && ov.maxTouch >= 0 {
+		maxTouch = ov.maxTouch
 	}
 
 	nav := map[string]any{
@@ -277,7 +315,7 @@ func buildNavigator(bp api.BrowserProfile, osp api.OSProfile, gpu api.GPUProfile
 		"languages":           langList,
 		"hardwareConcurrency": hwConc,
 		"deviceMemory":        devMem,
-		"maxTouchPoints":      0,
+		"maxTouchPoints":      maxTouch,
 		"cookieEnabled":       true,
 		"doNotTrack":          nil,
 		"onLine":              true,

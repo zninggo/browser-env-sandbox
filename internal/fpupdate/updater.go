@@ -108,6 +108,18 @@ func Update(dataPath string) (version string, stats map[string]int, err error) {
 		return "", nil, fmt.Errorf("write %s: %w", dataPath, err)
 	}
 
+	// Also emit the joint device-profile distribution (UA-conditioned
+	// categoricals) so the engine can sample coherent, data-driven fingerprints.
+	dpJSON, err := parseNetworkToDeviceProfileJSON(networkJSON, ver, 0)
+	if err != nil {
+		return "", nil, fmt.Errorf("parse device profiles: %w", err)
+	}
+	dpPath := filepath.Join(filepath.Dir(dataPath), "device_profiles.json")
+	if err := os.WriteFile(dpPath, dpJSON, 0644); err != nil {
+		return "", nil, fmt.Errorf("write %s: %w", dpPath, err)
+	}
+	fmt.Printf("Wrote joint device profiles to %s (%d bytes)\n", dpPath, len(dpJSON))
+
 	var result struct {
 		Stats map[string]int `json:"stats"`
 	}
