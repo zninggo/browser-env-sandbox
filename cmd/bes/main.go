@@ -2,11 +2,14 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"time"
 
+	"github.com/zninggo/browser-env-sandbox/internal/executor"
 	"github.com/zninggo/browser-env-sandbox/internal/fpengine"
 	"github.com/zninggo/browser-env-sandbox/internal/fpupdate"
 	"github.com/zninggo/browser-env-sandbox/internal/mcp"
@@ -29,6 +32,8 @@ func main() {
 		cmdExportFP(os.Args[2:])
 	case "selftest":
 		cmdSelftest(os.Args[2:])
+	case "dual-check":
+		cmdDualCheck(os.Args[2:])
 	case "mcp":
 		cmdMCP(os.Args[2:])
 	case "update-fp":
@@ -49,6 +54,7 @@ Usage:
   bes run (--script <file> | --eval <code>) [--browser chrome] [--os windows] [--seed 0] [--location <url>]
   bes export-fp --output <file> [--browser chrome] [--os windows] [--seed 0]
   bes selftest
+  bes dual-check [--browser chrome] [--os windows] [--seed 0] [--timezone <tz>] [--json]
   bes mcp                    # Start MCP server (stdio, for AI agents)
   bes update-fp              # Download latest fingerprint data from npm
   bes version
@@ -107,6 +113,132 @@ func cmdExportFP(args []string) {
 
 func cmdSelftest(args []string) {
 	fmt.Println("Run ./bes-selftest for the full self-test suite")
+}
+
+// cmdDualCheck verifies the dual-executor contract: ONE device profile
+// driving both the V8 sandbox and a real local Chrome (CDP), with identity
+// points compared field-by-field and canvas/wasm checked for real execution.
+func cmdDualCheck(args []string) {
+	fs := flag.NewFlagSet("dual-check", flag.ExitOnError)
+	browser := fs.String("browser", "chrome", "Browser type")
+	osName := fs.String("os", "windows", "Operating system")
+	seed := fs.Uint64("seed", 0, "Fingerprint seed (0 = random)")
+	timezone := fs.String("timezone", "", "IANA timezone (empty = random from KB)")
+	timeout := fs.Int("timeout", 30, "Per-probe timeout (seconds)")
+	jsonOut := fs.Bool("json", false, "Print the report as JSON")
+	fs.Parse(args)
+
+	fpEng := fpengine.New()
+	v8 := executor.NewV8Executor(fpEng, 2)
+	defer v8.Dispose()
+	chrome := executor.NewChromeExecutor()
+	defer chrome.Dispose()
+
+	snap, err := executor.TakeSnapshot(fpEng, *seed, *browser, *osName, *timezone)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeout+45)*time.Second)
+	defer cancel()
+	rep, err := executor.VerifyConsistency(ctx, snap, v8, chrome, *timeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *jsonOut {
+		out, _ := json.MarshalIndent(rep, "", "  ")
+		fmt.Println(string(out))
+	} else {
+		printDualCheckReport(rep)
+	}
+
+	chromeAvailable := chrome.Available()
+	if !rep.AllPass || (chromeAvailable && !rep.RealPass) {
+		os.Exit(1)
+	}
+}
+
+func printDualCheckReport(rep *executor.ConsistencyReport) {
+	fmt.Printf("Profile: %s\n\n", rep.Profile)
+
+	fmt.Println("Identity consistency (profile vs V8 vs Chrome):")
+	fmt.Printf("  %-22s %-44s %-6s %-6s %s\n", "field", "want", "v8", "chrome", "pass")
+	for _, f := range rep.Fields {
+		chromeCol := "-"
+		if rep.ChromeRan {
+			chromeCol = mark(f.Chrome == f.Want)
+		}
+		fmt.Printf("  %-22s %-44s %-6s %-6s %t%s\n",
+			f.Field, truncFor(f.Want, 44), mark(f.V8 == f.Want), chromeCol,
+			f.Pass, failNote(f))
+	}
+	if rep.V8Error != "" {
+		fmt.Printf("  v8 error: %s\n", rep.V8Error)
+	}
+	if rep.ChromeError != "" {
+		fmt.Printf("  chrome error: %s\n", rep.ChromeError)
+	}
+
+	fmt.Println("\nReal execution (Chrome):")
+	fmt.Printf("  canvas: %s\n", canvasLine(rep.Canvas))
+	fmt.Printf("  wasm:   %s\n", wasmLine(rep.Wasm))
+	fmt.Println("V8 (mocked, for contrast):")
+	fmt.Printf("  canvas: %s\n", canvasLine(rep.V8Canvas))
+	fmt.Printf("  wasm:   %s\n", wasmLine(rep.V8Wasm))
+
+	fmt.Printf("\nSummary: %s\n", rep.Summary())
+}
+
+func truncFor(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+func mark(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "DIFF"
+}
+
+func failNote(f executor.FieldCheck) string {
+	if f.Pass {
+		return ""
+	}
+	return "  [" + f.Note + "]"
+}
+
+func canvasLine(m map[string]any) string {
+	if m == nil {
+		return "unavailable"
+	}
+	png, _ := m["png"].(bool)
+	length := 0
+	switch l := m["len"].(type) {
+	case float64:
+		length = int(l)
+	}
+	return fmt.Sprintf("png=%t len=%d", png, length)
+}
+
+func wasmLine(m map[string]any) string {
+	if m == nil {
+		return "unavailable"
+	}
+	if ok, _ := m["ok"].(bool); ok {
+		val, _ := m["val"].(float64)
+		return fmt.Sprintf("compiled+ran, f() = %d", int(val))
+	}
+	why, _ := m["why"].(string)
+	if why == "" {
+		why = "no"
+	}
+	return "not real: " + why
 }
 
 func cmdMCP(args []string) {
