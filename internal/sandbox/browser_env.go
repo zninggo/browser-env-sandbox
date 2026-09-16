@@ -970,9 +970,12 @@ func (p *PostContextBuilder) injectComplexNavigator() {
 	}
 	langArr += "]"
 
-	// navigator.userAgentData
+	// navigator.userAgentData. Absent for non-Chromium profiles (browser
+	// adjustments delete the key) — define undefined so navigator.userAgentData
+	// reads as absent exactly like a real Firefox/Safari, instead of leaking
+	// an empty object.
 	uad := p.fp.Navigator["userAgentData"]
-	uadJSON := "{}"
+	uadJSON := "undefined"
 	if uad != nil {
 		if m, ok := uad.(map[string]any); ok {
 			// Build brands array
@@ -1003,14 +1006,37 @@ func (p *PostContextBuilder) injectComplexNavigator() {
 		langFirst = langs[0]
 	}
 
+	// screen.orientation is a map in fp.Screen, which the ObjectTemplate
+	// builder skips (complex type) — inject it here so the V8 env exposes the
+	// same screen.orientation.type the device profile drives in the Chrome
+	// CDP executor (cross-executor identity, see internal/executor).
+	orientationJSON := `{"type":"landscape-primary","angle":0}`
+	if o, ok := p.fp.Screen["orientation"].(map[string]any); ok {
+		t, _ := o["type"].(string)
+		if t == "" {
+			t = "landscape-primary"
+		}
+		angle := 0.0
+		switch a := o["angle"].(type) {
+		case float64:
+			angle = a
+		case int:
+			angle = float64(a)
+		}
+		orientationJSON = fmt.Sprintf(`{"type":%q,"angle":%v}`, t, angle)
+	}
+
 	js := fmt.Sprintf(`
 		(function(){
 			Object.defineProperty(navigator, 'language', {value: %q, configurable: true, writable: true});
 			Object.defineProperty(navigator, 'languages', {value: %s, configurable: true, writable: true});
 			Object.defineProperty(navigator, 'userAgentData', {value: %s, configurable: true, writable: true});
 			Object.defineProperty(navigator, 'connection', {value: %s, configurable: true, writable: true});
+			try {
+				Object.defineProperty(screen, 'orientation', {value: %s, configurable: true, writable: true});
+			} catch(e) {}
 		})();
-	`, langFirst, langArr, uadJSON, connJSON)
+	`, langFirst, langArr, uadJSON, connJSON, orientationJSON)
 	p.ctx.RunScript(js, "nav-complex.js")
 }
 

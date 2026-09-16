@@ -344,6 +344,41 @@ sdk/
     └── bes/               # bes CLI (Go 编译)
 ```
 
+### 2.6 双执行器层 (executor)
+
+**职责：** 同一份 device profile 驱动多个执行器 —— V8 沙箱（默认，快、无痕）
++ 本地隔离真 Chrome（CDP 注入，canvas/wasm 等需真实执行的指纹点）。
+
+**架构：** 详见 `docs/dual-executor.md`。
+
+```
+ProfileSnapshot（一次联合采样的 device profile）
+        │
+        ├──► V8Executor      ── CreateSessionWithFingerprint（身份面注入 V8 env）
+        │
+        └──► ChromeExecutor  ── Emulation UA/TZ 覆盖 + addScriptToEvaluateOnNewDocument
+                │                （身份面注入真 Chrome；canvas/wasm 真实执行）
+                ▼
+        Router：按 PointClass 路由（默认 v8；canvas/webgl/audio/wasm → chrome，
+                失败自动回退 v8）+ VerifyConsistency 跨执行器一致性校验
+```
+
+**模块结构：**
+
+```
+executor/
+├── executor.go    # Executor/Session 接口 + PointClass 分类
+├── profile.go     # ProfileSnapshot（共享 profile 快照）
+├── v8.go          # V8 执行器（默认）
+├── chrome.go      # Chrome CDP 执行器
+├── chrome_launcher.go  # 本地隔离 Chrome 启动/回收（仅 127.0.0.1）
+├── cdp.go         # 极简 CDP 客户端（ws + JSON-RPC）
+├── inject.go      # profile → Chrome 注入脚本
+├── probe.go       # 身份/canvas/wasm 探针
+├── router.go      # 路由 + 回退（切换机制）
+└── consistency.go # 跨执行器一致性校验
+```
+
 ## 3. Session 生命周期
 
 ```
@@ -391,6 +426,7 @@ browser-env-sandbox/
 ├── internal/
 │   ├── fpengine/             ← 指纹引擎
 │   ├── sandbox/              ← V8 沙箱引擎
+│   ├── executor/             ← 双执行器（V8 + Chrome CDP，见 2.6）
 │   ├── netlayer/             ← 网络层
 │   ├── debug/                ← 调试层 (CDP)
 │   └── bridge/               ← JSON-over-HTTP 桥接

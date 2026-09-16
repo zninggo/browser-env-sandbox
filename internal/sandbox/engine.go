@@ -134,12 +134,28 @@ type NetResponse struct {
 	SetCookies []string
 }
 
-// CreateSession creates a new sandbox session with the given options.
+// CreateSession creates a new sandbox session with the given options,
+// generating its fingerprint from the engine's fingerprint provider.
 func (e *Engine) CreateSession(opts api.SessionOptions) (*Session, error) {
 	// 1. Generate fingerprint (timezone-constrained when opts.Timezone is set)
 	fp, err := e.fpEng.GenerateWithTimezone(opts.Seed, opts.Browser, opts.OS, opts.Timezone)
 	if err != nil {
 		return nil, fmt.Errorf("fingerprint generation failed: %w", err)
+	}
+	return e.CreateSessionWithFingerprint(opts, fp)
+}
+
+// CreateSessionWithFingerprint creates a sandbox session driven by an
+// externally supplied fingerprint instead of a freshly generated one.
+//
+// This is the entry point for the dual-executor architecture: the caller
+// (internal/executor) snapshots ONE device profile and drives every executor
+// from the same api.Fingerprint, so identity points surface identically in
+// the V8 sandbox and the real-Chrome CDP executor. The fingerprint must be
+// non-nil and is used as-is — no re-sampling.
+func (e *Engine) CreateSessionWithFingerprint(opts api.SessionOptions, fp *api.Fingerprint) (*Session, error) {
+	if fp == nil {
+		return nil, fmt.Errorf("sandbox: fingerprint required")
 	}
 
 	// 2. Get Isolate from pool
